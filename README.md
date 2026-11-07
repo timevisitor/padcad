@@ -23,6 +23,10 @@ APK 打包走 Capacitor，在小米 Pad 7 Pro/Ultra 这类 12 寸平板上是真
 - 签名：本仓库的发布包用 debug 证书签名（方便自用升级），**不适合上架应用商店**；要正式分发请自己生成 keystore 签
 - 校验：`sha256 = 34524a2fa3454238536f146579e46e3b3e26c42050a78e0d2a7f5f218100ddc7`
 
+> 国内直连 GitHub release 的下载可能很慢或中断，可以用镜像前缀：
+> `https://ghfast.top/` + 上面的下载地址（例：`https://ghfast.top/https://github.com/timevisitor/padcad/releases/latest/download/PadCAD-5.0.2.apk`）。
+> 镜像只是加速，装之前仍建议核一下 sha256。
+
 ## 能做什么
 
 | 类别 | 能力 |
