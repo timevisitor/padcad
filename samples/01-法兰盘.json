@@ -1,0 +1,86 @@
+{
+  "v": 1,
+  "name": "法兰盘",
+  "_说明": "圆形阵列螺栓孔：第 3 步造一个刀具体，第 4 步按圆周复制它（source 是第 3 步的下标 2）",
+  "params": {
+    "OD": 160,
+    "T": 16,
+    "BORE": 60,
+    "BOLT": 12,
+    "BOLT_R": 60,
+    "N": 6
+  },
+  "steps": [
+    {
+      "op": {
+        "type": "primitive",
+        "shape": "cylinder",
+        "r": "$OD/2",
+        "h": "$T"
+      },
+      "label": "法兰盘体",
+      "expect": {
+        "volume": "$PI*($OD/2)^2*$T",
+        "bbox": [
+          "$OD",
+          "$OD",
+          "$T"
+        ]
+      }
+    },
+    {
+      "op": {
+        "type": "primitive",
+        "shape": "cylinder",
+        "r": "$BORE/2",
+        "h": "$T+20",
+        "at": [
+          0,
+          0,
+          "-($T+20)/2"
+        ],
+        "mode": "cut"
+      },
+      "label": "中心通孔"
+    },
+    {
+      "op": {
+        "type": "primitive",
+        "shape": "cylinder",
+        "r": "$BOLT/2",
+        "h": "$T+20",
+        "at": [
+          "$BOLT_R",
+          0,
+          "-($T+20)/2"
+        ],
+        "mode": "cut"
+      },
+      "label": "一个螺栓孔"
+    },
+    {
+      "op": {
+        "type": "pattern",
+        "source": 2,
+        "kind": "circular",
+        "count": "$N",
+        "axisPoint": [
+          0,
+          0,
+          0
+        ],
+        "axisDir": [
+          0,
+          0,
+          1
+        ],
+        "operation": "cut"
+      },
+      "label": "圆周阵列螺栓孔",
+      "expect": {
+        "volume": "$PI*($OD/2)^2*$T - $PI*($BORE/2)^2*$T - $N*$PI*($BOLT/2)^2*$T",
+        "tol": 1e-06
+      }
+    }
+  ]
+}

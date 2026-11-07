@@ -1,0 +1,85 @@
+{
+  "v": 1,
+  "name": "支架底板",
+  "_说明": "线性阵列的源是「上一步新增的那份材料」（不含原件），所以链式阵列是**累加**不是乘法：原件 + 阵列副本。孔位用的是几何选择器与坐标，不依赖点选。",
+  "params": {
+    "L": 120,
+    "W": 80,
+    "T": 10,
+    "HOLE": 9,
+    "SPACING": 30,
+    "N": 3,
+    "R": 6
+  },
+  "steps": [
+    {
+      "op": {
+        "type": "primitive",
+        "shape": "box",
+        "size": [
+          "$L",
+          "$W",
+          "$T"
+        ]
+      },
+      "label": "底板",
+      "expect": {
+        "volume": "$L*$W*$T"
+      }
+    },
+    {
+      "op": {
+        "type": "fillet",
+        "radius": "$R",
+        "selector": {
+          "dir": [
+            0,
+            0,
+            1
+          ],
+          "all": true
+        }
+      },
+      "label": "四角 R6",
+      "expect": {
+        "volume": "$L*$W*$T - 4*($R^2-$PI*$R^2/4)*$T",
+        "tol": 1e-06
+      }
+    },
+    {
+      "op": {
+        "type": "primitive",
+        "shape": "cylinder",
+        "r": "$HOLE/2",
+        "h": "$T+20",
+        "at": [
+          "-($N-1)/2*$SPACING",
+          0,
+          -10
+        ],
+        "mode": "cut"
+      },
+      "label": "一个安装孔"
+    },
+    {
+      "op": {
+        "type": "pattern",
+        "source": 2,
+        "kind": "linear",
+        "count": "$N",
+        "direction": [
+          1,
+          0,
+          0
+        ],
+        "spacing": "$SPACING",
+        "operation": "cut"
+      },
+      "label": "安装孔阵列",
+      "expect": {
+        "volume": "$L*$W*$T - 4*($R^2-$PI*$R^2/4)*$T - $N*$PI*($HOLE/2)^2*$T",
+        "tol": 1e-06
+      }
+    }
+  ]
+}

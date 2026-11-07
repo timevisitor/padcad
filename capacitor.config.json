@@ -1,0 +1,13 @@
+{
+  "appId": "com.padcad.tablet",
+  "appName": "PadCAD",
+  "webDir": "dist",
+  "android": {
+    "allowMixedContent": false,
+    "webContentsDebuggingEnabled": false,
+    "backgroundColor": "#edf2f7"
+  },
+  "server": {
+    "androidScheme": "https"
+  }
+}

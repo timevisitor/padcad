@@ -1,0 +1,132 @@
+/* ---------- 左侧特征树（结构视角，仿 SolidWorks） ---------- */
+#featTree {
+  position: fixed; left: 0; top: 0; bottom: 0; width: var(--ftw);
+  display: flex; flex-direction: column;
+  transform: translateX(-100%); transition: transform .18s ease;
+  z-index: 32; border-left: none; border-top: none; border-bottom: none;
+}
+body.feat-open #featTree { transform: none; }
+body.feat-open #view { left: var(--ftw); width: calc(100% - var(--ftw)); }
+body.feat-open.tree-open #view { width: calc(100% - var(--ftw) - var(--treew)); }
+body.feat-open #snapOverlay { left: var(--ftw); }
+body.feat-open { --leftw: var(--ftw); }
+/* 右侧历史记录展开时也占宽度；两个都开就两边都扣 */
+body.tree-open { --rightw: var(--treew); }
+/* 注意：这里**不能**再给 #toolbar 之类写 left —— 它们本身带 translateX(-50%)，
+   再叠一个 left 偏移会跑到侧栏底下（这就是"工具条被遮挡"的原因）。
+   侧栏宽度统一通过 --leftw / --rightw 表达，浮层自己在剩余区域里居中。 */
+
+#btnFeatShow {
+  position: fixed; left: 0; top: 50%; transform: translateY(-50%);
+  z-index: 33; padding: 10px 8px; border-radius: 0 10px 10px 0;
+  writing-mode: vertical-rl; font-size: 12px; cursor: pointer;
+}
+#btnFeatShow.hidden { display: none; }
+
+.ft-head {
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 12.5px;
+}
+.ft-actions button {
+  background: transparent; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 7px; padding: 3px 8px; cursor: pointer; font-size: 11px;
+}
+#ftList { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 0 8px; touch-action: pan-y; }
+
+/* 树节点：按层级缩进，靠 --d 控制 */
+.ft-node {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 10px 5px calc(10px + var(--d, 0) * 14px);
+  font-size: 12.5px; cursor: pointer; white-space: nowrap;
+}
+.ft-node:hover { background: rgba(255,255,255,.05); }
+.ft-node.sel { background: rgba(76,141,255,.22); }
+.ft-node .ft-ico {
+  flex: 0 0 auto; width: 18px; height: 18px; border-radius: 5px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; background: #232830; color: #9fb4d0;
+}
+.ft-node .ft-nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ft-node .ft-dt { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 10.5px; color: var(--muted); }
+.ft-node.grp .ft-nm { color: #cfd8e6; font-weight: 600; }
+.ft-node.err .ft-ico { background: #4a2226; color: #ff8a8a; }
+.ft-node.dim .ft-nm { color: var(--muted); }
+.ft-node input {
+  width: 100%; background: #0d0f12; border: 1px solid var(--accent);
+  border-radius: 6px; color: var(--fg); font-size: 12.5px; padding: 2px 5px;
+}
+.ft-foot {
+  flex: 0 0 auto; padding: 8px 12px 12px; font-size: 11px;
+  color: var(--muted); border-top: 1px solid var(--border);
+}
+
+/* ---------- 保存 / 打开工程 ---------- */
+#saveDialog {
+  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: 320px; max-width: calc(100vw - 32px); z-index: 60;
+  padding: 16px 16px 12px; border-radius: 14px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+#saveDialog.hidden { display: none; }
+.sd-title { font-size: 14px; font-weight: 600; }
+.sd-row { display: flex; align-items: center; gap: 8px; }
+#saveName {
+  flex: 1 1 auto; padding: 9px 10px; border-radius: 9px;
+  background: #0d0f12; border: 1px solid var(--border); color: var(--fg); font-size: 13.5px;
+}
+#saveName:focus { outline: none; border-color: var(--accent); }
+.sd-btns { display: flex; gap: 8px; }
+.sd-btns button {
+  flex: 1; padding: 10px 0; border-radius: 9px; cursor: pointer;
+  background: #1b2028; border: 1px solid var(--border); color: var(--fg); font-size: 13px;
+}
+.sd-btns button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.sd-list { max-height: 190px; overflow-y: auto; touch-action: pan-y; display: flex; flex-direction: column; gap: 4px; }
+.sd-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 8px 10px; border-radius: 8px; cursor: pointer;
+  background: #12161d; border: 1px solid transparent; font-size: 12.5px;
+}
+.sd-item:hover { border-color: var(--accent); }
+.sd-item .sd-meta { font-size: 10.5px; color: var(--muted); }
+.sd-item .sd-del { color: #ff7b7b; font-size: 11px; padding: 2px 6px; border-radius: 5px; }
+.sd-item .sd-del:hover { background: rgba(255,90,90,.15); }
+
+/* 导出时的文件命名对话框（复用 sd-* 的排版） */
+#nameAsk {
+  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: 320px; max-width: calc(100vw - 32px); z-index: 80;
+  padding: 16px 16px 14px; border-radius: 14px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+#nameAskInput {
+  flex: 1 1 auto; min-width: 0; padding: 9px 10px; border-radius: 9px;
+  background: #0d0f12; border: 1px solid var(--border); color: var(--fg); font-size: 13.5px;
+}
+#nameAskInput:focus { outline: none; border-color: var(--accent); }
+.name-ask-ext { color: var(--muted); font-size: 13px; flex: 0 0 auto; }
+
+/* 过定义提示（对应 SolidWorks 的"是否设为从动尺寸"） */
+#odAsk {
+  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: 320px; max-width: calc(100vw - 32px); z-index: 85;
+  padding: 16px; border-radius: 14px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.sd-hint { font-size: 11px; color: var(--muted); line-height: 1.6; }
+
+/* 同时打开两棵树时，仍给平板竖屏/分屏留下至少一半宽度的画布。 */
+@media (max-width: 1024px) {
+  :root { --ftw: min(232px, 24vw); --treew: min(250px, 24vw); }
+  .ft-head { flex-wrap: wrap; gap: 6px; }
+  .ft-actions { display: flex; gap: 3px; }
+  .ft-node:not(.grp) .ft-dt { display: none; }
+}
+
+@media (pointer: coarse) {
+  .ft-node { min-height: 48px; }
+  .ft-act, .ft-actions button, .sd-item .sd-del { min-width: 44px; min-height: 44px; }
+  .sd-item .sd-del { display: grid; place-items: center; }
+  .sd-btns button { min-height: 44px; }
+  #saveName, #nameAskInput { min-height: 44px; font-size: 16px; }
+}

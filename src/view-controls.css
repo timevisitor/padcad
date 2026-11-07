@@ -1,0 +1,45 @@
+.view-controls {
+  position: fixed;
+  top: max(144px, calc(env(safe-area-inset-top) + 132px));
+  left: calc(var(--leftw, 0px) + 14px);
+  z-index: 43;
+  color: var(--fg, #e8eaed);
+}
+.view-controls button {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--border, rgba(255,255,255,.12));
+  border-radius: 8px;
+  background: #1b2028;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.view-controls button:active { background: #303946; }
+.view-controls button:focus-visible { outline: 2px solid var(--accent, #4c8dff); outline-offset: 2px; }
+.view-controls button.on { background: var(--accent, #4c8dff); border-color: transparent; color: #fff; }
+.view-controls button:disabled { opacity: .4; cursor: default; }
+.view-controls-trigger { min-width: 58px; }
+.view-controls-panel {
+  position: absolute;
+  top: 52px;
+  left: 0;
+  width: 238px;
+  max-width: calc(100vw - var(--leftw, 0px) - var(--rightw, 0px) - 28px);
+  max-height: calc(100dvh - 218px);
+  overflow-y: auto;
+  touch-action: pan-y;
+  padding: 12px;
+  border: 1px solid var(--border, rgba(255,255,255,.12));
+  border-radius: 12px;
+  background: rgba(30, 33, 39, .98);
+  box-shadow: 0 8px 24px rgba(0,0,0,.35);
+}
+.view-controls-panel[hidden] { display: none; }
+.view-controls-current { margin: 0 0 10px; font-size: 13px; font-weight: 600; }
+.view-controls-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.view-controls-grid button { padding-inline: 6px; }
+.view-controls-hint { margin: 10px 0 0; color: var(--muted, #9aa0a6); font-size: 12px; line-height: 1.5; }

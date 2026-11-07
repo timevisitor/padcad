@@ -1,0 +1,27 @@
+{
+  "v": 1,
+  "name": "压缩弹簧",
+  "_说明": "螺旋扫掠：R 中径半径 / wireR 钢丝半径 / pitch 螺距 / turns 圈数；clockwise:true 为左旋",
+  "params": {
+    "R": 20,
+    "WIRE": 2,
+    "PITCH": 8,
+    "TURNS": 8
+  },
+  "steps": [
+    {
+      "op": {
+        "type": "helix",
+        "R": "$R",
+        "wireR": "$WIRE",
+        "pitch": "$PITCH",
+        "turns": "$TURNS"
+      },
+      "label": "弹簧",
+      "expect": {
+        "volume": "$PI*$WIRE^2*$sqrt((2*$PI*$R)^2+$PITCH^2)*$TURNS",
+        "tol": 0.002
+      }
+    }
+  ]
+}

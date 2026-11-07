@@ -1,0 +1,849 @@
+/* Afu3D-style shell: left tool rail + right tool rail + top bar + bottom gesture bar. */
+body.workspace-ui {
+  --bg: #e8ecf1;
+  --panel: #ffffff;
+  --card: #ffffff;
+  --fg: #1f2a37;
+  --foreground: #1f2a37;
+  --muted: #6b7785;
+  --muted-foreground: #6b7785;
+  --accent: #2b7fff;
+  --ok: #238451;
+  --warn: #d77b19;
+  --border: #d0d7e0;
+  --brand: #2b7fff;
+  --ftw: 240px;
+  --treew: 0px;
+  --leftw: 76px;
+  --rightw: 76px;
+  --header-height: calc(52px + env(safe-area-inset-top, 0px));
+  --ribbon-height: 0px;
+  --timeline-height: 0px;
+  --status-height: calc(36px + env(safe-area-inset-bottom, 0px));
+  --bottombar-height: calc(56px + env(safe-area-inset-bottom, 0px));
+  --workspace-top: var(--header-height);
+  --workspace-bottom: calc(var(--bottombar-height) + var(--status-height));
+  --command-width: 320px;
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  color-scheme: light;
+  font: 13px/1.45 "PingFang SC", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+}
+
+body.workspace-ui.feat-open { --leftw: calc(76px + var(--ftw)); }
+body.workspace-ui.tree-open { --timeline-height: 82px; }
+body.workspace-ui [hidden], body.workspace-ui .hidden { display: none !important; }
+body.workspace-ui button, body.workspace-ui input, body.workspace-ui select {
+  min-height: 44px;
+  touch-action: manipulation;
+  font: inherit;
+}
+body.workspace-ui button { min-width: 44px; cursor: pointer; }
+body.workspace-ui button:disabled { opacity: .42; cursor: default; }
+body.workspace-ui :is(button, input, select, textarea):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+body.workspace-ui :is(input, select, textarea) {
+  min-width: 0;
+  background: #ffffff !important;
+  color: var(--fg) !important;
+  border: 1px solid #c5ced9;
+  border-radius: 8px;
+  font-variant-numeric: tabular-nums;
+  accent-color: var(--accent);
+}
+body.workspace-ui input::placeholder { color: #8a95a3; opacity: 1; }
+body.workspace-ui :is(input, textarea) { user-select: text; -webkit-user-select: text; }
+body.workspace-ui :is(input[type="checkbox"], input[type="radio"]) { min-height: 24px; width: 24px; }
+body.workspace-ui * { scrollbar-width: thin; scrollbar-color: #b7c3d0 transparent; }
+
+body.workspace-ui #view {
+  top: var(--workspace-top);
+  left: var(--leftw);
+  right: var(--rightw);
+  bottom: var(--workspace-bottom);
+  width: calc(100% - var(--leftw) - var(--rightw));
+  height: calc(100% - var(--workspace-top) - var(--workspace-bottom));
+  background:
+    linear-gradient(90deg, rgba(0,0,0,.03) 1px, transparent 1px) 0 0 / 28px 28px,
+    linear-gradient(rgba(0,0,0,.03) 1px, transparent 1px) 0 0 / 28px 28px,
+    radial-gradient(ellipse at 40% 35%, #f7f9fb 0%, #e9eef4 62%, #dfe6ee 100%);
+}
+/* 时间线是**占位**的，不是浮在画布上：画布必须把这 82px 让出来，
+   否则零件底部会被时间线盖住一条（实测画布底边与时间线底边重合）。 */
+body.workspace-ui.tree-open #view {
+  bottom: calc(var(--workspace-bottom) + var(--timeline-height));
+  height: calc(100% - var(--workspace-top) - var(--workspace-bottom) - var(--timeline-height));
+}
+
+body.workspace-ui #snapOverlay { pointer-events: none; }
+/* Ribbon host remains for app visibility toggles, but is not part of the Afu3D shell. */
+body.workspace-ui #toolbar { display: none !important; }
+
+/* ---------- top bar ---------- */
+body.workspace-ui #workspaceHeader {
+  position: fixed;
+  inset: 0 0 auto;
+  height: var(--header-height);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: env(safe-area-inset-top, 0px) 14px 0;
+  background: #ffffff;
+  border-bottom: 1px solid #e2e8f0;
+  z-index: 55;
+  min-width: 0;
+}
+body.workspace-ui .workspace-brand { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; font-size: 17px; font-weight: 700; letter-spacing: -.3px; color: #1a2736; }
+body.workspace-ui .workspace-brand svg { width: 24px; height: 24px; flex: none; }
+body.workspace-ui #documentTitle {
+  flex: 0 1 auto; min-width: 0; max-width: 220px; margin-inline: auto;
+  padding: 8px 14px; border: 1px solid #d7dee8; border-radius: 8px;
+  background: #f7f9fc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-weight: 550; color: #2a3a4d;
+}
+body.workspace-ui #workspaceStatus { flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; padding: 3px 8px; background: #eef3f8; border: 1px solid #dce5ee; border-radius: 6px; color: #52657a; font-size: 11px; }
+body.workspace-ui :is(#headerHistory, #documentActions) { display: flex; align-items: center; flex: 0 0 auto; gap: 4px; }
+body.workspace-ui #headerHistory { padding-right: 7px; border-right: 1px solid #e4e9ef; }
+body.workspace-ui #workspaceHeader button {
+  height: 42px; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 0 10px; background: transparent; border: 1px solid transparent; border-radius: 8px;
+  color: #33465c; font-size: 12px; white-space: nowrap;
+}
+body.workspace-ui #workspaceHeader button:hover { background: #f0f4f9; border-color: #e1e8f0; }
+body.workspace-ui #workspaceHeader .command-icon { width: 18px; height: 18px; flex: none; }
+
+/* ---------- left / right tool rails ---------- */
+body.workspace-ui :is(#leftToolRail, #rightToolRail) {
+  position: fixed;
+  top: var(--header-height);
+  bottom: var(--workspace-bottom);
+  width: 76px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 8px;
+  background: transparent;
+  z-index: 40;
+  /*
+   * 以前是 overflow: visible。轨道内容一高于可用高度（窄高屏 / 分屏 / 底栏换行变高），
+   * 末尾几个按钮就溢出到弹底栏底下 —— 底栏 z-index 50 比轨道 40 高，于是**看得见却点不到**，
+   * 点「曲面」实际点到「设置选项」，整条曲面子菜单等于失效。
+   * 改成纵向滚动：宁可滚动，也不让按钮被别的层压住。
+   */
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+body.workspace-ui :is(#leftToolRail, #rightToolRail)::-webkit-scrollbar { width: 0; height: 0; }
+body.workspace-ui #leftToolRail { left: 0; }
+body.workspace-ui #rightToolRail { right: 0; }
+
+body.workspace-ui .rail-groups { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+body.workspace-ui .rail-primary { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+
+body.workspace-ui .rail-button,
+body.workspace-ui :is(#leftToolRail, #rightToolRail) button {
+  width: 60px;
+  min-width: 60px;
+  min-height: 60px;
+  height: 60px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 4px 2px;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #3a4d64;
+  box-shadow: 0 2px 8px rgba(31, 42, 55, 0.08);
+  overflow: hidden;
+}
+body.workspace-ui .rail-button .command-label,
+body.workspace-ui :is(#leftToolRail, #rightToolRail) button .command-label {
+  display: block;
+  max-width: 56px;
+  font-size: 10px;
+  line-height: 1.15;
+  white-space: normal;
+  text-align: center;
+  color: #4a5d73;
+}
+body.workspace-ui .rail-button .command-icon,
+body.workspace-ui :is(#leftToolRail, #rightToolRail) button .command-icon {
+  width: 20px;
+  height: 20px;
+  stroke-width: 1.7;
+  flex: none;
+  color: var(--accent);
+}
+body.workspace-ui .rail-button:hover { background: #f3f7fc; border-color: #c9d7e8; }
+body.workspace-ui .rail-button.on,
+body.workspace-ui :is(#leftToolRail, #rightToolRail) button.on {
+  background: #e8f1ff;
+  border-color: var(--accent);
+  color: #1558b0;
+}
+body.workspace-ui .rail-button.on .command-icon { color: var(--accent); }
+body.workspace-ui .rail-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+body.workspace-ui .rail-button.primary .command-icon,
+body.workspace-ui .rail-button.primary .command-label { color: #fff; }
+
+body.workspace-ui .rail-feature-list {
+  margin-top: auto;
+  border-radius: 12px;
+  height: 56px;
+}
+body.workspace-ui #btnProjectionMode { margin-top: auto; border-radius: 12px; height: 56px; }
+
+/* sketch drawing tools shown under left primary tools */
+body.workspace-ui .rail-sketch-tools { display: none; width: 100%; }
+body.workspace-ui[data-context="sketch"] .rail-sketch-tools { display: flex; flex-direction: column; gap: 8px; }
+
+/* compact sketchbar: horizontal chips at top of canvas */
+body.workspace-ui #sketchbar.workspace-sketchbar-compact {
+  position: fixed;
+  top: calc(var(--header-height) + 8px);
+  left: calc(var(--leftw) + 8px);
+  right: calc(var(--rightw) + 8px);
+  bottom: auto;
+  width: auto;
+  height: auto;
+  max-height: none;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid #d9e2ec;
+  border-radius: 12px;
+  background: #fffffff2;
+  box-shadow: 0 4px 18px rgba(31, 42, 55, 0.08);
+  z-index: 42;
+}
+body.workspace-ui #sketchbar.workspace-sketchbar-compact button {
+  min-width: 52px;
+  min-height: 48px;
+  height: 48px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: #33485f;
+}
+body.workspace-ui #sketchbar.workspace-sketchbar-compact button.on {
+  background: #e8f1ff;
+  border-color: var(--accent);
+}
+body.workspace-ui #sketchbar.workspace-sketchbar-compact .command-icon { width: 20px; height: 20px; }
+
+/* ---------- info chips (浅色 / 面数) ---------- */
+body.workspace-ui #infoChips {
+  position: fixed;
+  top: calc(var(--header-height) + 10px);
+  left: calc(var(--leftw) + 10px);
+  display: flex;
+  gap: 8px;
+  z-index: 38;
+}
+body.workspace-ui .chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid #d7dee8;
+  border-radius: 8px;
+  background: #fffffff2;
+  color: #3c5068;
+  font-size: 12px;
+  white-space: nowrap;
+}
+body.workspace-ui #faceCountChip { font-variant-numeric: tabular-nums; }
+body.workspace-ui #shadeChip { color: #4a5d73; }
+
+/* ---------- command palette (功能列表) ---------- */
+body.workspace-ui #commandPalette {
+  position: fixed;
+  top: calc(var(--header-height) + 12px);
+  left: calc(var(--leftw) + 8px);
+  right: auto;
+  width: min(340px, calc(100vw - var(--leftw) - var(--rightw) - 24px));
+  max-height: calc(100dvh - var(--workspace-top) - var(--workspace-bottom) - 24px);
+  overflow-y: auto;
+  z-index: 60;
+}
+body.workspace-ui .cp-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 10px; color: #2b3d51;
+}
+body.workspace-ui .cp-head button { width: 40px; height: 40px; min-height: 40px; border: 0; background: transparent; color: #5a6d82; font-size: 18px; }
+body.workspace-ui .cp-group { margin-bottom: 12px; }
+body.workspace-ui .cp-group-title { margin-bottom: 6px; color: #6a7b8e; font-size: 11px; letter-spacing: .4px; }
+body.workspace-ui .cp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+body.workspace-ui .cp-item {
+  display: flex; align-items: center; gap: 8px;
+  min-height: 44px; padding: 6px 10px;
+  border: 1px solid #e1e7ef; border-radius: 8px;
+  background: #f7f9fc; color: #2f4258; font-size: 12px; text-align: left;
+}
+body.workspace-ui .cp-item .command-icon { width: 18px; height: 18px; color: var(--accent); flex: none; }
+
+/* ---------- context menu (long-press chips) ---------- */
+body.workspace-ui #contextMenu {
+  position: fixed;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: min(360px, calc(100vw - 24px));
+  padding: 8px;
+  border: 1px solid #c9d5e2;
+  border-radius: 12px;
+  background: #fffffff5;
+  box-shadow: 0 8px 28px rgba(31, 42, 55, 0.16);
+  z-index: 80;
+}
+body.workspace-ui #contextMenu.hidden { display: none !important; }
+body.workspace-ui .ctx-item {
+  min-height: 40px;
+  padding: 6px 12px;
+  border: 1px solid #d5deea;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #2b3f56;
+  font-size: 12px;
+  white-space: nowrap;
+}
+body.workspace-ui .ctx-item:hover { background: #eef4fb; border-color: var(--accent); }
+
+/* ---------- bottom bar ---------- */
+body.workspace-ui #bottomBar {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  min-height: var(--bottombar-height);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 8px 12px env(safe-area-inset-bottom, 0px);
+  background: #ffffff;
+  border-top: 1px solid #e2e8f0;
+  z-index: 50;
+}
+body.workspace-ui #gestureHint {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #6c7c8e;
+  font-size: 11px;
+}
+body.workspace-ui #commandSearchWrap { flex: 0 1 280px; min-width: 140px; }
+body.workspace-ui #commandSearch {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid #d5deea;
+  background: #f4f7fb;
+  font-size: 12px;
+}
+body.workspace-ui #bottomActions { display: flex; gap: 6px; flex: 0 0 auto; }
+body.workspace-ui #bottomActions .rail-button {
+  width: auto;
+  min-width: 44px;
+  height: 42px;
+  min-height: 42px;
+  flex-direction: row;
+  gap: 6px;
+  padding: 0 12px;
+  border-radius: 999px;
+}
+body.workspace-ui #appVersion { flex: 0 0 auto; color: #8492a3; font-size: 11px; border: 0; background: transparent; }
+
+/* status bar lives inside bottom bar as expandable strip */
+body.workspace-ui #status {
+  position: relative;
+  inset: auto;
+  flex: 1 1 100%;
+  order: 10;
+  width: 100%;
+  height: var(--status-height);
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 4px;
+  border: 0;
+  border-top: 1px solid #eef2f6;
+  border-radius: 0;
+  background: transparent;
+  color: #5a6c80;
+  z-index: 51;
+  font-size: 10px;
+}
+body.workspace-ui #status > .row:not(#stats) { flex: 0 0 auto; gap: 6px; white-space: nowrap; }
+body.workspace-ui #status .dot { width: 6px; height: 6px; }
+body.workspace-ui #stats { display: block; flex: 1 1 auto; min-width: 0; margin: 0; color: #64758b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
+body.workspace-ui #status[role="button"] { cursor: pointer; }
+body.workspace-ui #status.expanded {
+  height: auto; min-height: var(--status-height); max-height: 35dvh;
+  padding-block: 10px; align-items: flex-start;
+  box-shadow: 0 -5px 20px #3f566420; overflow-y: auto; touch-action: pan-y;
+}
+body.workspace-ui #status.expanded #stats { white-space: normal; overflow-wrap: anywhere; font-size: 12px; line-height: 1.65; color: #344a63; }
+
+/* ---------- navigation / view controls ---------- */
+body.workspace-ui #navigationBar {
+  position: fixed;
+  top: calc(var(--header-height) + 10px);
+  right: calc(var(--rightw) + 10px);
+  left: auto;
+  bottom: auto;
+  transform: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: max-content;
+  max-width: calc(100vw - var(--leftw) - var(--rightw) - 24px);
+  padding: 4px;
+  border: 1px solid #d5deea;
+  border-radius: 10px;
+  background: #fffffff2;
+  z-index: 43;
+}
+body.workspace-ui #navigationBar .view-controls { position: relative; top: auto; bottom: auto; left: auto; right: auto; z-index: auto; color: #425e7b; }
+body.workspace-ui #navigationBar :is(button, #modeToggle) {
+  position: static; transform: none;
+  display: flex; align-items: center; justify-content: center; gap: 5px;
+  min-width: 44px; min-height: 44px; height: 44px; padding: 7px 10px;
+  border: 1px solid transparent; border-radius: 8px;
+  background: transparent; color: #46637f; font-size: 11px; white-space: nowrap;
+}
+body.workspace-ui #navigationBar button:hover { background: #eaf1f9; }
+body.workspace-ui #navigationBar :is(button.on, #modeToggle.planar) { background: #e8f1ff; border-color: var(--accent); color: #1b5eaa; }
+body.workspace-ui #navigationBar .command-icon { width: 18px; height: 18px; flex: none; }
+body.workspace-ui #navigationBar .view-controls-panel {
+  top: calc(100% + 8px); bottom: auto; left: auto; right: 0;
+  width: 248px; max-width: calc(100vw - var(--leftw) - var(--rightw) - 24px);
+  max-height: calc(100dvh - var(--workspace-top) - var(--workspace-bottom) - 86px);
+  background: #ffffff; border-color: #c4d0df; border-radius: 10px;
+  box-shadow: 0 6px 24px #314c6630;
+}
+
+/* axis gizmo / scale */
+body.workspace-ui #axisGizmo {
+  right: calc(var(--rightw) + 14px);
+  bottom: calc(var(--workspace-bottom) + 14px);
+  width: 84px; height: 84px; z-index: 25;
+}
+body.workspace-ui #axisGizmo text { stroke: #eff4f8; stroke-opacity: .9; }
+body.workspace-ui #scaleBar {
+  right: calc(var(--rightw) + 14px);
+  bottom: calc(var(--workspace-bottom) + 100px);
+  color: #586e87; font-size: 10px; z-index: 25;
+}
+
+/* ---------- feature tree / history ---------- */
+body.workspace-ui #featTree {
+  top: var(--workspace-top);
+  bottom: var(--workspace-bottom);
+  left: 76px;
+  width: var(--ftw);
+  padding: 0;
+  border: 0;
+  border-right: 1px solid #d5deea;
+  border-radius: 0;
+  background: #ffffff;
+  z-index: 36;
+}
+body.workspace-ui .ft-head {
+  min-height: 48px; flex-wrap: nowrap; padding: 2px 8px 2px 13px;
+  color: #33475d; background: #f4f7fb; border-bottom: 1px solid #e2e8f0;
+  font-size: 12px; font-weight: 650;
+}
+body.workspace-ui .ft-actions { display: flex; align-items: center; gap: 2px; }
+body.workspace-ui .ft-actions button { width: 44px; height: 44px; padding: 0; border: 0; background: transparent; color: #536880; border-radius: 8px; }
+body.workspace-ui #ftList { padding: 6px 0; overflow-x: hidden; overscroll-behavior: contain; }
+body.workspace-ui .ft-node { min-height: 44px; padding-top: 0; padding-bottom: 0; padding-right: 4px; gap: 4px; color: #35485f; font-size: 12px; }
+body.workspace-ui .ft-node:hover { background: #f0f5fa; }
+body.workspace-ui .ft-node.sel { background: #e8f1ff; box-shadow: inset 3px 0 var(--accent); }
+body.workspace-ui .ft-node .ft-ico { width: 20px; height: 20px; background: #e8eef6; color: #597695; border-radius: 6px; }
+body.workspace-ui .ft-node .ft-act { min-width: 44px; width: 44px; height: 44px; min-height: 44px; border: 0; border-radius: 6px; color: #748296; }
+body.workspace-ui #btnFeatShow {
+  top: calc(var(--workspace-top) + 14px); left: 76px; transform: none;
+  min-width: 44px; min-height: 44px; padding: 8px;
+  border-radius: 0 8px 8px 0;
+  background: #ffffff; color: #4c647e; border: 1px solid #d5deea; z-index: 37;
+}
+
+body.workspace-ui #tree {
+  top: auto;
+  left: var(--leftw);
+  right: var(--rightw);
+  bottom: var(--workspace-bottom);
+  width: auto;
+  height: var(--timeline-height);
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  padding: 0;
+  border: 0;
+  border-top: 1px solid #d5deea;
+  border-radius: 0;
+  background: #ffffff;
+  transform: translateY(calc(100% + var(--workspace-bottom)));
+  visibility: hidden;
+  overflow: hidden;
+  z-index: 40;
+}
+body.workspace-ui.tree-open #tree { transform: none; visibility: visible; }
+body.workspace-ui #tree .tree-head {
+  flex: 0 0 148px; height: auto; display: flex; flex-direction: row; align-items: center;
+  justify-content: space-between; gap: 6px;
+  padding: 8px 8px 8px 14px; border-bottom: 0; border-right: 1px solid #e2e8f0;
+  font-size: 12px; color: #647488; white-space: nowrap;
+}
+
+body.workspace-ui #treeList {
+  display: flex; align-items: center; flex-direction: row; gap: 8px;
+  flex: 1 1 auto; min-width: 0; height: 100%; padding: 10px 12px;
+  overflow-x: auto; overflow-y: hidden; touch-action: pan-x; overscroll-behavior-x: contain;
+  /* 82px 的横条里再塞一条横向滚动条会白吃掉 10px，卡片就被挤到底边；
+     平板本来就用手指横扫，滚动条只是噪声。改成隐藏 + 两端渐隐：
+     既把高度还给卡片，又让滚到一半的卡片看起来是「还有更多」，而不是被截断。 */
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+}
+body.workspace-ui #treeList::-webkit-scrollbar { width: 0; height: 0; display: none; }
+
+/*
+ * 时间线卡片。
+ * 曾经坏在这里（实测）：卡片里的 .timeline-step 是 display:block，而通用按钮规则
+ * 给了它 min-height:44px，里面的 .ico 是块级、.nm/.dt 是行内 —— 于是图标独占一行、
+ * 文字被顶到第二三行，按钮实测 69px 高塞进 52px 的卡里，文字直接压在卡片外框上，
+ * 而且 ✎ 按钮占掉 44px 宽。现在：卡片定宽 + overflow:hidden，
+ * 内容是 grid（左列图标跨两行垂直居中，右列两行文字），超长一律省略号。
+ */
+body.workspace-ui #tree .tree-item {
+  position: relative;
+  flex: 0 0 168px; width: 168px; height: 52px; min-height: 52px;
+  margin: 0; padding: 0; gap: 0;
+  border: 1px solid #d5deea; background: #ffffff; border-radius: 8px; color: #435a73;
+  overflow: hidden;
+}
+body.workspace-ui #tree .tree-item.cur { background: #e8f1ff; border-color: var(--accent); color: #145ba6; }
+body.workspace-ui #tree .tree-item:active { border-color: var(--accent); }
+body.workspace-ui #tree .tree-item .timeline-step {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-content: center;
+  column-gap: 7px;
+  width: 100%; height: 100%;
+  min-width: 0; min-height: 0;          /* 覆盖通用按钮的 44px 下限，否则卡片装不下 */
+  padding: 5px 32px 5px 9px;            /* 右侧 32px 留给 ✎ */
+  border: 0; border-radius: 7px; background: transparent;
+  color: inherit; text-align: left; overflow: hidden;
+}
+body.workspace-ui #tree .tree-item .timeline-step .ico {
+  grid-row: 1 / span 2; align-self: center; justify-self: center;
+  width: 22px; height: 22px; font-size: 12px;
+}
+body.workspace-ui #tree .tree-item .timeline-step .nm {
+  grid-column: 2; grid-row: 1; min-width: 0;
+  font-size: 12.5px; line-height: 16px; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+body.workspace-ui #tree .tree-item .timeline-step .dt {
+  grid-column: 2; grid-row: 2; min-width: 0;
+  font-size: 10.5px; line-height: 14px; color: #7d8b9c;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+body.workspace-ui #tree .tree-item .ed {
+  position: absolute; top: 50%; right: 3px; transform: translateY(-50%);
+  width: 28px; height: 28px; min-width: 28px; min-height: 28px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 7px; background: transparent;
+  color: #8a97a6; font-size: 13px; line-height: 1;
+}
+body.workspace-ui #tree .tree-item .ed:hover { background: var(--accent); color: #fff; }
+
+/* 草图子节点（挂在拉伸底下的那一条）在时间线里也站得住：窄一点、虚线框、淡一点。
+   注意它**没有** .timeline-step 包一层，所以 grid 得写在卡片自己身上 ——
+   实测过：不给它 grid 的话说明文字右距只剩 1px，紧贴边框。 */
+body.workspace-ui #tree .tree-item.sub {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-content: center;
+  column-gap: 7px;
+  flex: 0 0 132px; width: 132px;
+  padding: 5px 10px;
+  background: #f7f9fc; border-style: dashed;
+}
+body.workspace-ui #tree .tree-item.sub .ico { grid-row: 1 / span 2; align-self: center; justify-self: center; }
+body.workspace-ui #tree .tree-item.sub .nm {
+  grid-column: 2; grid-row: 1; min-width: 0; font-weight: 500; color: #55667a;
+  font-size: 12.5px; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+body.workspace-ui #tree .tree-item.sub .dt {
+  grid-column: 2; grid-row: 2; min-width: 0; font-size: 10.5px; line-height: 14px; color: #8a97a6;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+body.workspace-ui #tree .tree-item.sub .ed {
+  position: absolute; top: 50%; right: 3px; transform: translateY(-50%);
+  width: 26px; height: 26px; min-width: 26px; min-height: 26px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 7px; color: #8a97a6; font-size: 12px;
+}
+
+/* 提示语不能霸占整条时间线：限定宽度、两行内、不许把卡片挤走 */
+body.workspace-ui #tree .tree-foot {
+  flex: 0 1 auto; min-width: 0; max-width: 176px; height: auto;
+  display: flex; align-items: center;
+  padding: 8px 12px; border-top: 0; border-left: 1px solid #e2e8f0;
+  font-size: 10.5px; line-height: 14px; color: #8695a6;
+  white-space: normal; overflow: hidden;
+}
+
+body.workspace-ui #btnTreeShow {
+  position: fixed; top: auto; right: 12px; left: auto;
+  bottom: calc(var(--workspace-bottom) + 10px); transform: none;
+  min-height: 44px; padding: 8px 12px;
+  border-radius: 8px; border: 1px solid #d5deea;
+  background: #ffffff; color: #47637f; z-index: 42;
+}
+
+/* ---------- command panels ---------- */
+body.workspace-ui :is(#patternPanel, #featPanel, #smartPad, #edgebar, #extrude, #relPad, #xformPad, #refgPad, #movePad, #picker, #dimPanel, #offsetPanel, #linkbar, #numpad) {
+  position: fixed;
+  top: calc(var(--workspace-top) + 12px);
+  bottom: auto;
+  left: auto;
+  right: calc(var(--rightw) + 12px);
+  transform: none;
+  width: var(--command-width);
+  min-width: 0;
+  max-width: calc(100vw - var(--leftw) - var(--rightw) - 24px);
+  max-height: calc(100dvh - var(--workspace-top) - var(--workspace-bottom) - 24px);
+  margin: 0;
+  padding: 14px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  touch-action: pan-y;
+  overscroll-behavior: contain;
+  border: 1px solid #c9d5e2;
+  border-radius: 12px;
+  background: #ffffff;
+  color: var(--fg);
+  box-shadow: 0 8px 30px #2e485426;
+  z-index: 48;
+}
+body.workspace-ui :is(#patternPanel, #featPanel, #smartPad, #edgebar, #extrude, #relPad, #xformPad, #refgPad, #movePad, #picker, #dimPanel, #offsetPanel, #linkbar, #numpad) button {
+  min-height: 44px; min-width: 44px; padding: 7px 10px;
+  border: 1px solid #d5deea; border-radius: 8px;
+  background: #f4f7fb; color: #385371; font-size: 12px;
+}
+body.workspace-ui :is(.panel, .dim-edit) :is(button.primary, button.on),
+body.workspace-ui #picker button[data-act="apply"] {
+  background: var(--accent) !important; border-color: var(--accent); color: #ffffff !important;
+}
+
+/* 面信息面板排在命令面板底下：万一两者同时显示（抽壳/圆角/倒角 vs 选中面），
+   必须保证命令参数条（壁厚 / 应用 / 取消）是能看见、能点的那个 —— 它们同占一个命令位。 */
+body.workspace-ui #picker { z-index: 47; }
+
+/* modal dialogs */
+body.workspace-ui :is(#saveDialog, #nameAsk, #odAsk, .dim-edit) {
+  position: fixed; top: 50%; left: 50%; right: auto; bottom: auto;
+  transform: translate(-50%, -50%);
+  width: 420px; min-width: 0; max-width: calc(100vw - 32px); max-height: calc(100dvh - 48px);
+  overflow-y: auto; touch-action: pan-y; padding: 20px;
+  background: #ffffff; color: var(--fg);
+  border: 1px solid #c9d5e2; border-radius: 12px;
+  box-shadow: 0 14px 60px #243f5a4a; z-index: 90;
+}
+
+/* start / view workspaces */
+body.workspace-ui[data-workspace="start"] { --leftw: 0px; --rightw: 0px; --workspace-top: 0px; --workspace-bottom: 0px; }
+body.workspace-ui[data-workspace="start"] :is(#workspaceHeader, #navigationBar, #toolbar, #sketchbar, #featTree, #tree, #btnFeatShow, #btnTreeShow, #axisGizmo, #scaleBar, #status, #leftToolRail, #rightToolRail, #bottomBar, #infoChips, #commandPalette, #contextMenu) { display: none !important; }
+body.workspace-ui[data-workspace="start"] :is(#picker, #dimHandle, #dimLeader) { display: none !important; }
+body.workspace-ui #startScreen {
+  background: radial-gradient(ellipse at 50% 30%, #f7fafd, #e5edf5 72%);
+  color: var(--fg);
+}
+body.workspace-ui .ss-logo {
+  display: flex; align-items: center; justify-content: center; gap: 12px;
+  background: none; color: #1a2736; -webkit-text-fill-color: #1a2736;
+  font-size: 42px; letter-spacing: -1.5px;
+}
+body.workspace-ui .ss-logo::before {
+  content: ""; width: 13px; height: 31px; border-radius: 3px;
+  background: var(--brand); transform: skewY(-18deg);
+}
+body.workspace-ui .ss-sub { color: #718299; font-size: 13px; }
+body.workspace-ui .ss-modes { gap: 18px; margin-top: 32px; }
+body.workspace-ui .ss-mode {
+  width: 286px; min-height: 188px; padding: 25px; align-items: flex-start;
+  border: 1px solid #c8d4e1; border-radius: 12px; background: #ffffff;
+  color: #36526f; text-align: left; box-shadow: 0 5px 18px #435b7110;
+}
+body.workspace-ui .ss-mode[data-mode="model"] { border-top: 3px solid var(--accent); }
+body.workspace-ui .ss-ico { color: var(--accent); font-size: 32px; }
+body.workspace-ui .ss-name { color: #1a2736; font-size: 19px; }
+
+body.workspace-ui[data-workspace="view"] { --leftw: 0px; --rightw: 0px; --ribbon-height: 0px; --timeline-height: 0px; }
+body.workspace-ui[data-workspace="view"] :is(#toolbar, #sketchbar, #featTree, #tree, #btnFeatShow, #btnTreeShow, #documentActions, #headerHistory, #leftToolRail, #rightToolRail) { display: none !important; }
+body.workspace-ui[data-workspace="view"] :is(#picker, #dimHandle, #dimLeader) { display: none !important; }
+body.workspace-ui #viewbar {
+  position: fixed; top: var(--header-height); bottom: auto; left: 0; right: 0;
+  transform: none; width: 100%; max-width: 100%; height: 64px;
+  display: flex; flex-wrap: nowrap; justify-content: flex-start; gap: 7px;
+  padding: 9px 15px; border: 0; border-bottom: 1px solid var(--border);
+  border-radius: 0; background: #f7f9fc;
+  overflow-x: auto; overflow-y: hidden; touch-action: pan-x;
+}
+
+/* ---------- 曲面子菜单（flyout）：从右轨「曲面」按钮旁边弹出，四项竖排 ----------
+   位置由 workspace-ui.js 按按钮矩形算（left/top），跟着按钮走；窄屏也不出界。 */
+body.workspace-ui #surfaceGroupPad.surface-flyout {
+  position: fixed;
+  top: calc(var(--workspace-top, 52px) + 12px);
+  left: auto;
+  right: calc(var(--rightw, 76px) + 10px);
+  bottom: auto;
+  width: 214px;
+  min-width: 0;
+  max-width: calc(100vw - 24px);
+  margin: 0;
+  padding: 8px;
+  border: 1px solid #c9d5e2;
+  border-radius: 12px;
+  background: #ffffff;
+  color: var(--fg);
+  box-shadow: 0 10px 28px #2e485435;
+  z-index: 62;
+  transform-origin: 100% 50%;
+  animation: surfaceFlyoutIn 120ms ease-out;
+}
+/* 指向轨道按钮的小尖角：--flyout-arrow 由 JS 设成按钮中心高度 */
+body.workspace-ui #surfaceGroupPad.surface-flyout::after {
+  content: "";
+  position: absolute;
+  right: -6.5px;
+  top: var(--flyout-arrow, 24px);
+  width: 12px;
+  height: 12px;
+  background: #ffffff;
+  border-top: 1px solid #c9d5e2;
+  border-right: 1px solid #c9d5e2;
+  transform: rotate(45deg);
+}
+/* 左边空间不够、菜单翻到按钮右侧时，尖角跟着翻到左边（JS 加 .flip-right） */
+body.workspace-ui #surfaceGroupPad.surface-flyout.flip-right::after {
+  right: auto;
+  left: -6.5px;
+  border-top: 0;
+  border-right: 0;
+  border-bottom: 1px solid #c9d5e2;
+  border-left: 1px solid #c9d5e2;
+}
+@keyframes surfaceFlyoutIn {
+  from { opacity: 0; transform: scale(.96) translateX(6px); }
+  to { opacity: 1; transform: none; }
+}
+body.workspace-ui .surface-flyout .flyout-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  padding: 2px 6px 8px;
+}
+body.workspace-ui .surface-flyout .flyout-hint { font-size: 11px; color: #7b8794; }
+body.workspace-ui .surface-flyout .flyout-list { display: flex; flex-direction: column; gap: 4px; }
+body.workspace-ui .surface-flyout .flyout-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 100%; min-width: 0; min-height: 46px;
+  padding: 7px 10px 7px 12px;
+  border: 1px solid transparent; border-radius: 9px;
+  background: #f6f8fb; color: #1f2a37;
+  font-size: 14px; text-align: left;
+}
+body.workspace-ui .surface-flyout .flyout-item .flyout-name { font-size: 14px; line-height: 18px; }
+body.workspace-ui .surface-flyout .flyout-item .flyout-sub {
+  margin-left: auto; font-size: 10.5px; line-height: 14px; color: #8695a6;
+}
+body.workspace-ui .surface-flyout .flyout-item::after {
+  content: "›"; flex: none; color: #93a3b5; font-size: 17px; line-height: 1;
+}
+body.workspace-ui .surface-flyout .flyout-item:hover,
+body.workspace-ui .surface-flyout .flyout-item:focus-visible {
+  background: #e8f1ff; border-color: #b9d3f7; color: #1558b0;
+}
+body.workspace-ui .surface-flyout .flyout-item:hover .flyout-sub { color: #4a76ad; }
+body.workspace-ui .surface-flyout .flyout-item:active { background: #d9e8ff; }
+body.workspace-ui .surface-flyout .flyout-foot {
+  margin-top: 6px; padding: 8px 6px 2px;
+  border-top: 1px dashed #e2e8f0;
+  font-size: 10.5px; line-height: 14px; color: #8695a6;
+}
+/* 曲面主按钮在子菜单展开时保持点亮，用户知道这组菜单从哪来 */
+body.workspace-ui #rightToolRail [data-act="surface"][aria-expanded="true"] {
+  background: #e8f1ff; border-color: var(--accent);
+}
+
+/*
+ * 矮屏（例如 1163×647 的窗口 / 分屏、笔记本）：轨道可用高度只有 ~460px，
+ * 8 个 60px 入口按常规尺寸摆会溢出到弹底栏底下（底栏 z-index 更高，按钮就点不到了）。
+ * 这里把入口压到 46px、间距 6px，让它们全部留在轨道框内，点得到也不串层。
+ */
+@media (max-height: 760px) {
+  body.workspace-ui :is(#leftToolRail, #rightToolRail) { gap: 6px; padding: 8px 8px; }
+  body.workspace-ui .rail-button,
+  body.workspace-ui :is(#leftToolRail, #rightToolRail) button {
+    width: 56px; min-width: 56px; height: 46px; min-height: 46px; flex: 0 0 auto;
+  }
+  body.workspace-ui .rail-button .command-icon,
+  body.workspace-ui :is(#leftToolRail, #rightToolRail) button .command-icon { width: 17px; height: 17px; }
+  body.workspace-ui .rail-button .command-label,
+  body.workspace-ui :is(#leftToolRail, #rightToolRail) button .command-label {
+    font-size: 9px; line-height: 1.05; max-width: 52px;
+  }
+}
+
+@media (max-width: 1050px) {
+  body.workspace-ui { --command-width: 300px; --leftw: 68px; --rightw: 68px; }
+  body.workspace-ui :is(#leftToolRail, #rightToolRail) { width: 68px; }
+  body.workspace-ui .rail-button,
+  body.workspace-ui :is(#leftToolRail, #rightToolRail) button { width: 54px; min-width: 54px; height: 56px; min-height: 56px; }
+}
+@media (max-width: 760px) {
+  body.workspace-ui { --ftw: 210px; --command-width: 280px; }
+  body.workspace-ui #workspaceHeader { gap: 6px; padding-inline: 8px; }
+  body.workspace-ui .workspace-brand .workspace-brand-name { display: none; }
+  body.workspace-ui #documentTitle { max-width: 120px; }
+  body.workspace-ui #workspaceStatus { display: none; }
+  body.workspace-ui #workspaceHeader #documentActions .command-label { display: none; }
+  body.workspace-ui #gestureHint { display: none; }
+  body.workspace-ui #commandSearchWrap { flex: 1 1 auto; }
+}
+@media (max-width: 540px) {
+  body.workspace-ui { --leftw: 60px; --rightw: 60px; }
+  body.workspace-ui :is(#leftToolRail, #rightToolRail) { width: 60px; padding-inline: 4px; }
+  body.workspace-ui .rail-button,
+  body.workspace-ui :is(#leftToolRail, #rightToolRail) button { width: 48px; min-width: 48px; height: 52px; min-height: 52px; }
+  body.workspace-ui .rail-button .command-label,
+  body.workspace-ui :is(#leftToolRail, #rightToolRail) button .command-label { font-size: 9px; max-width: 46px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  body.workspace-ui *, body.workspace-ui *::before, body.workspace-ui *::after { transition: none !important; }
+}
+@media (pointer: coarse) {
+  body.workspace-ui { --status-height: calc(34px + env(safe-area-inset-bottom, 0px)); }
+}

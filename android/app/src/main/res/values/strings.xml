@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">PadCAD</string>
+    <string name="title_activity_main">PadCAD</string>
+    <string name="package_name">com.padcad.tablet</string>
+    <string name="custom_url_scheme">com.padcad.tablet</string>
+</resources>

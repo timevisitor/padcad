@@ -1,0 +1,65 @@
+/* ---------- 开始界面 ---------- */
+#startScreen {
+  position: fixed; inset: 0; z-index: 100;
+  display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(circle at 50% 35%, #161a21 0%, #0b0d10 70%);
+  overflow-y: auto;
+  touch-action: pan-y;
+}
+#startScreen.hidden { display: none; }
+.ss-inner { text-align: center; max-width: 760px; padding: 24px; margin: auto; }
+.ss-logo {
+  font-size: 40px; font-weight: 700; letter-spacing: 3px;
+  background: linear-gradient(92deg, #6ea8ff, #a78bfa);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.ss-sub { margin-top: 8px; font-size: 13px; color: var(--muted); }
+.ss-modes {
+  margin-top: 34px; display: flex; gap: 18px; justify-content: center; flex-wrap: wrap;
+}
+.ss-mode {
+  width: 260px; padding: 26px 20px; border-radius: 18px; cursor: pointer;
+  background: #12161d; border: 1px solid var(--border); color: var(--fg);
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  transition: transform .12s ease, border-color .12s ease, background .12s ease;
+}
+.ss-mode:hover, .ss-mode:active {
+  transform: translateY(-3px); border-color: var(--accent); background: #171d26;
+}
+.ss-ico { font-size: 30px; line-height: 1; color: #8fb6ff; }
+.ss-name { font-size: 19px; font-weight: 600; }
+.ss-desc { font-size: 11.5px; color: var(--muted); line-height: 1.6; }
+.ss-note {
+  margin-top: 26px; font-size: 11px; color: #6b7686; line-height: 1.7;
+}
+
+/* ---------- 看图模式工具条 ---------- */
+#viewbar {
+  position: fixed;
+  left: calc(var(--leftw) + (100vw - var(--leftw) - var(--rightw)) / 2);
+  bottom: max(14px, env(safe-area-inset-bottom));
+  transform: translateX(-50%); z-index: 40;
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 10px; border-radius: 999px;
+  flex-wrap: wrap; justify-content: center;
+  width: max-content;
+  max-width: calc(100vw - var(--leftw) - var(--rightw) - 28px);
+}
+#viewbar.hidden { display: none; }
+#viewbar button {
+  min-height: 44px;
+  padding: 9px 14px; border-radius: 999px; cursor: pointer;
+  background: #1b2028; border: 1px solid var(--border); color: var(--fg); font-size: 12.5px;
+}
+#viewbar button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+#viewbar .tag {
+  padding: 5px 11px; border-radius: 999px; margin-right: 4px;
+  background: rgba(76,141,255,.18); color: #9dc0ff; font-size: 12px;
+}
+
+@media (max-height: 500px) {
+  .ss-inner { padding: 18px; }
+  .ss-modes { margin-top: 18px; }
+  .ss-mode { padding: 16px; }
+  .ss-note { margin-top: 14px; }
+}

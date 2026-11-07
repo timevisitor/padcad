@@ -1,0 +1,41 @@
+/* ---------- 建模脚本面板（AI / 批量化建模） ----------
+   注意：颜色一律走主题变量。第一版把深色主题的硬编码色搬了过来
+   （#1b2028 底 + var(--fg) 文字），浅色主题下直接变成「深底深字」，
+   按钮文字几乎看不见 —— 截图一看就露馅。
+   输入框用 --bg 做「内凹」：浅色主题里比面板略深、深色主题里更暗，两边都成立。 */
+#scriptPad {
+  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: min(760px, calc(100vw - 24px)); max-height: calc(100vh - 36px);
+  z-index: 70; padding: 14px; border-radius: 14px;
+  display: flex; flex-direction: column; gap: 9px;
+}
+#scriptPad.hidden { display: none; }
+#scriptPad .sp-top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; font-size: 13px; }
+#scriptPad .sp-top .muted { font-size: 11px; color: var(--muted); }
+#spText {
+  flex: 1 1 auto; min-height: 190px; max-height: 40vh; overflow: auto;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+  color: var(--fg); font: 12px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  padding: 10px; resize: vertical; white-space: pre; tab-size: 2;
+}
+#spText::placeholder { color: var(--muted); opacity: .8; }
+#spText:focus { outline: none; border-color: var(--accent); }
+#scriptPad .sp-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+#scriptPad .sp-btns button {
+  flex: 1 1 auto; min-width: 118px; padding: 10px 12px; border-radius: 9px; cursor: pointer;
+  background: var(--bg); border: 1px solid var(--border); color: var(--fg); font-size: 13px;
+}
+#scriptPad .sp-btns button:hover { border-color: var(--accent); }
+#scriptPad .sp-btns button.primary {
+  background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600;
+}
+#scriptPad .sp-btns button:disabled { opacity: .45; cursor: default; border-color: var(--border); }
+.sp-report { max-height: 26vh; overflow-y: auto; touch-action: pan-y; font-size: 11.5px; line-height: 1.7; color: var(--muted); }
+.sp-report .sp-line { color: var(--fg); font-weight: 600; }
+.sp-report .sp-line.bad { color: #d9484d; }
+.sp-report .sp-row { border-top: 1px solid var(--border); padding: 3px 0; }
+.sp-report .sp-row.bad, .sp-report .sp-row b { color: #d9484d; }
+@media (pointer: coarse) {
+  #scriptPad .sp-btns button { min-height: 46px; }
+  #spText { font-size: 13px; }
+}

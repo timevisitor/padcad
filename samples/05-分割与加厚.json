@@ -1,0 +1,25 @@
+{
+  "v": 1,
+  "name": "分割与加厚",
+  "_说明": "先把 60×40×8 板用 x=0 平面切一半（保留 x≥0 那侧），再把这一半做成壁厚 2 的闭合空腔。加厚的几何定义是「原实体 − 内缩 t 的实体」（两面各缩 t），不是逐面偏置，所以体积能直接写成解析式。",
+  "params": { "L": 60, "W": 40, "T": 8, "WALL": 2 },
+  "steps": [
+    {
+      "op": { "type": "primitive", "shape": "box", "size": ["$L", "$W", "$T"] },
+      "label": "板 60×40×8",
+      "expect": { "volume": "$L*$W*$T" }
+    },
+    {
+      "op": { "type": "split_plane", "origin": [0, 0, 0], "normal": [1, 0, 0], "keep": "positive" },
+      "label": "保留 x≥0 一半",
+      "expect": { "volume": "$L*$W*$T/2" }
+    },
+    {
+      "op": { "type": "thicken", "thickness": "$WALL" },
+      "label": "壁厚 2 闭合空腔",
+      "expect": {
+        "volume": "$L*$W*$T/2 - ($L/2-2*$WALL)*($W-2*$WALL)*($T-2*$WALL)"
+      }
+    }
+  ]
+}

@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#e6dfd3" />
+  <title>PadCAD · 平板建模</title>
+  <link rel="stylesheet" href="/src/style.css" />
+  <link rel="stylesheet" href="/src/start.css" />
+  <link rel="stylesheet" href="/src/feattree.css" />
+</head>
+<body>
+  <canvas id="view"></canvas>
+  <!-- 捕捉标记与追踪引导线（pointer-events:none，绝不挡触摸） -->
+  <canvas id="snapOverlay"></canvas>
+
+  <!-- 开始界面：先选模式 -->
+    <!-- 视图浮层：坐标系指示器 + 比例尺 + 平面/3D 开关（仿 Fusion 360） -->
+  <svg id="axisGizmo" viewBox="0 0 100 100" aria-hidden="true"></svg>
+  <div id="scaleBar" class=""><span id="sbText">10 mm</span><i id="sbBar"></i></div>
+  <button id="modeToggle" title="切换平面模式 / 3D 模式">平面</button>
+
+<div id="startScreen">
+    <div class="ss-inner">
+      <div class="ss-logo">PadCAD</div>
+      <div class="ss-sub">平板上的触摸式 CAD · 纯本地算力</div>
+      <div class="ss-modes">
+        <button class="ss-mode" data-mode="model">
+          <span class="ss-ico">⬒</span>
+          <span class="ss-name">建模</span>
+          <span class="ss-desc">草图 · 推拉 · 圆角 · 参数化 · 导出 STEP</span>
+        </button>
+        <button class="ss-mode" data-mode="view">
+          <span class="ss-ico">◎</span>
+          <span class="ss-name">看图</span>
+          <span class="ss-desc">STEP · STL · PLY · OBJ</span>
+        </button>
+      </div>
+      <div class="ss-note">X_T / Parasolid 是 Siemens 私有格式，本内核读不了，请先另存为 STEP</div>
+    </div>
+  </div>
+
+  <!-- 看图模式的工具条 -->
+  <div id="viewbar" class="panel hidden">
+    <span class="tag">看图</span>
+    <button data-vact="open">打开文件</button>
+    <button data-vact="fit">适配</button>
+    <button data-vact="wire">线框</button>
+    <button data-vact="edges">显示棱边</button>
+    <button data-vact="back">返回</button>
+  </div>
+  <!-- 文件选择（accept 只是给系统选择器一个提示，真正的格式判断在代码里） -->
+  <input type="file" id="fileInput" style="display:none"
+         accept=".step,.stp,.stl,.ply,.obj,.STEP,.STP,.STL,.PLY,.OBJ" />
+
+  <!-- 左上：状态 -->
+  <div id="status" class="panel">    <div class="row"><span class="dot" id="kdot"></span><span id="ktext">内核加载中…</span></div>
+    <div class="row muted" id="stats"></div>
+  </div>
+
+  <!-- 实体命令：启动后由工作区模块整理到顶部功能区 -->
+  <div id="toolbar" class="panel">
+    <button data-act="select" class="on">选择</button>
+    <button data-act="pushpull">推拉</button>
+    <button data-act="sketch">草图</button>
+    <button data-act="fillet">圆角</button>
+    <button data-act="chamfer">倒角</button>
+    <button data-act="shell">抽壳</button>
+    <button data-act="move">移动</button>
+    <button data-act="linearPattern">线性阵列</button>
+    <button data-act="circularPattern">圆周阵列</button>
+    <button data-act="mirror">镜像</button>
+    <button data-act="link">链接</button>
+    <button data-act="smartdim">智能尺寸</button>
+    <button data-act="datum">基准面</button>
+    <button data-act="refg">参考几何体</button>
+    <button data-act="script">脚本</button>
+    <button data-act="snap" class="on">捕捉</button>
+    <button data-act="fit">适配</button>
+    <button data-act="save">保存</button>
+    <button data-act="load">打开</button>
+    <button data-act="step">导出STEP</button>
+    <!-- 网格导出：加工沟通要 STL、3D 打印要 3MF、切片/交换要 OBJ（A 批 exporters.js 已有实现，只是没有入口） -->
+    <button data-act="stl">导出STL</button>
+    <button data-act="obj">导出OBJ</button>
+    <button data-act="3mf">导出3MF</button>
+    <!-- 检查：当前实体的体积/表面积/质心/包围盒（inspect.massProperties） -->
+    <button data-act="measure">测量</button>
+    <!-- 8 个只有 op 的特征，一次性接上可点入口（C 批 + D 批） -->
+    <button data-act="hole">孔</button>
+    <button data-act="combine">布尔</button>
+    <button data-act="splitPlane">分割</button>
+    <button data-act="offsetFace">移动面</button>
+    <button data-act="thicken">加厚</button>
+    <button data-act="surface">曲面</button>
+    <button data-act="surfaceOffset">曲面偏移</button>
+    <button data-act="surfaceThicken">曲面加厚</button>
+    <button data-act="surfaceFill">补面</button>
+    <button data-act="surfaceStitch">缝合</button>
+  </div>
+
+  <!-- 圆角 / 倒角 / 抽壳 参数面板 -->
+  <div id="edgebar" class="panel hidden">
+    <span class="tag" id="edgeTag">圆角</span>
+    <input id="edgeVal" type="number" inputmode="decimal" step="0.5" value="2" />
+    <span class="muted">mm</span>
+    <button data-edge="apply" class="primary">应用</button>
+    <button data-edge="clear">清空</button>
+    <button data-edge="cancel">取消</button>
+  </div>
+
+  <!-- 草图模式工具条（进入草图后替换底部工具栏） -->
+  <div id="sketchbar" class="panel hidden">
+    <span class="tag">草图</span>
+    <button data-sact="select" title="选择/移动，不会新建元素">选择</button>
+    <button data-sact="rect">矩形</button>
+    <button data-sact="circle">圆</button>
+    <button data-sact="line">直线</button>
+    <button data-sact="ref">引用</button>
+    <button data-sact="offset">等距</button>
+    <!-- 草图几何工具（B 批 sketch-tools.js）：数值浮层输入，手指点两下就能出一个图元 -->
+    <button data-sact="polygon">多边形</button>
+    <button data-sact="slot">槽口</button>
+    <button data-sact="arc">三点圆弧</button>
+    <button data-sact="ellipse">椭圆</button>
+    <button data-sact="trim">裁剪</button>
+    <button data-sact="dim">尺寸</button>
+    <button data-sact="rel">关系</button>
+    <button data-sact="xform">变换</button>
+    <button data-sact="snap" class="on">捕捉</button>
+    <button data-sact="view">正视</button>
+    <button data-sact="undo">撤销</button>
+    <button data-sact="cancel">取消</button>
+    <button data-sact="finish" class="primary">完成</button>
+  </div>
+
+  <!-- 参考几何体：基准面 / 基准轴 / 点 / 坐标系（仿 SolidWorks） -->
+  <div id="refgPad" class="panel hidden">
+    <div class="row"><b>参考几何体</b><span class="muted" id="rgInfo"></span></div>
+    <div class="xf-tabs">
+      <button data-rg="plane">基准面</button>
+      <button data-rg="axis">基准轴</button>
+      <button data-rg="point">点</button>
+      <button data-rg="csys">坐标系</button>
+    </div>
+    <div id="rgForm"></div>
+    <div class="row" style="margin-top:8px"><span class="muted" id="rgList"></span></div>
+    <div class="row" style="margin-top:8px">
+      <button id="rgClear" class="ghost">清空全部</button>
+      <button id="rgClose" class="ghost">关闭</button>
+    </div>
+  </div>
+
+  <!-- 实体变换：平移 / 旋转整个模型 -->
+  <div id="movePad" class="panel hidden">
+    <div class="row"><b>移动 / 旋转</b><span class="muted" id="mvInfo"></span></div>
+    <div class="xf-row"><span>Δx</span><input id="mvDx" type="number" step="1" value="0"><span class="muted">mm</span></div>
+    <div class="xf-row"><span>Δy</span><input id="mvDy" type="number" step="1" value="0"><span class="muted">mm</span></div>
+    <div class="xf-row"><span>Δz</span><input id="mvDz" type="number" step="1" value="0"><span class="muted">mm</span></div>
+    <div class="xf-row"><span>旋转</span><input id="mvRot" type="number" step="15" value="0"><span class="muted">°</span></div>
+    <div class="xf-row"><span>绕轴</span>
+      <select id="mvAxis"><option value="Z">Z 轴</option><option value="X">X 轴</option><option value="Y">Y 轴</option></select></div>
+    <div class="xf-row"><span>绕点</span>
+      <select id="mvPivot"><option value="center">模型中心</option><option value="origin">坐标原点</option></select></div>
+    <div class="row" style="margin-top:8px">
+      <button id="mvGo" class="primary">应用</button>
+      <button id="mvClose" class="ghost">关闭</button>
+    </div>
+  </div>
+
+  <!-- 草图变换：移动 / 镜像 / 阵列（草图层面） -->
+  <div id="xformPad" class="panel hidden">
+    <div class="row"><b>变换</b><span class="muted" id="xfInfo">点选图元</span></div>
+    <div id="xfBody"></div>
+    <div class="row" style="margin-top:8px">
+      <button id="xfClose" class="ghost">关闭</button>
+    </div>
+  </div>
+
+  <!-- 关系（约束）：点选元素后从列表里选要添加的约束 -->
+  <div id="relPad" class="panel hidden">
+    <div class="row"><b>添加关系</b><span class="muted" id="relInfo">点选元素</span></div>
+    <div id="relBtns" class="rel-btns"></div>
+    <div class="row rel-foot">
+      <span class="muted" id="relList"></span>
+      <button id="relClose">关闭</button>
+    </div>
+  </div>
+
+  <!-- 等距实体：输入距离 -->
+  <div id="offsetPanel" class="panel hidden">
+    <div class="dp-title" id="offsetTitle">等距实体</div>
+    <div class="dp-row"><span class="dp-label">距离（mm）</span>
+      <input id="offsetVal" type="number" inputmode="decimal" step="0.5" value="2" /></div>
+    <div class="fp-btns">
+      <button data-oact="apply" class="primary">生成</button>
+      <button data-oact="close">取消</button>
+    </div>
+    <div class="dp-hint">正数往外偏、负数往内偏</div>
+  </div>
+
+  <!-- 链接：让一个面拉伸到与目标等高/相切/重合 -->
+  <div id="linkbar" class="panel hidden">
+    <span class="tag">链接</span>
+    <span class="muted" id="linkHint">先点要移动的面</span>
+    <button data-lkind="face" class="on">面</button>
+    <button data-lkind="edge">边</button>
+    <button data-lkind="point">端点</button>
+    <button data-lact="cancel">取消</button>
+  </div>
+
+  <!-- 拉伸参数（草图完成后弹出） -->
+  <!-- 尺寸标注：点一个图元，改数字，图形自己变形 -->
+  <div id="dimPanel" class="panel hidden"></div>
+  <div id="extrude" class="panel hidden">
+    <div class="row"><b>拉伸</b><span class="muted" id="extrInfo"></span></div>
+    <div class="row" style="margin-top:8px">
+      <input id="extrDist" type="number" inputmode="decimal" step="1" value="5" />
+      <span class="muted">mm</span>
+    </div>
+    <!-- 多轮廓：草图里有多个闭合轮廓时，可以只拉伸点选的那几个 -->
+    <div class="row" style="margin-top:8px">
+      <span class="muted" id="extrContours">全部轮廓</span>
+      <button data-eact="contour" class="ghost">点选轮廓</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button data-eact="out" class="primary">加料</button>
+      <button data-eact="in">挖料</button>
+      <button data-eact="back" class="ghost">返回</button>
+    </div>
+    <!-- 旋转凸台：轮廓绕草图上一条竖直轴转（轴默认取轮廓最左边，可改） -->
+    <div class="row" style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px">
+      <span class="muted">旋转</span>
+      <input id="revAngle" type="number" inputmode="decimal" step="15" value="360" style="width:72px" />
+      <span class="muted">°</span>
+      <input id="revAxis" type="number" inputmode="decimal" step="1" placeholder="轴x" style="width:72px" />
+      <button data-eact="revolve" class="primary">旋转凸台</button>
+    </div>
+    <!-- 扫掠 / 放样：都吃草图的多个轮廓 -->
+    <div class="row" style="margin-top:8px">
+      <span class="muted">多轮廓</span>
+      <button data-eact="sweep" title="第一个选中的轮廓作截面，第二个作路径">扫掠</button>
+      <button data-eact="loft" title="所有选中的轮廓依次过渡">放样</button>
+    </div>
+    <p class="muted" style="font-size:12px">生成实体后，可从工具栏创建阵列或镜像。</p>
+  </div>
+
+  <!-- 右上：选中信息 -->
+  <div id="picker" class="panel hidden"></div>
+
+  <!-- 保存 / 打开工程 -->
+  <!-- 建模脚本：纯数据 JSON → 逐步重放 → 每步几何校验（借鉴 Yi3D 的 AI 辅助建模流程） -->
+  <div id="scriptPad" class="panel hidden">
+    <div class="sp-top">
+      <b>建模脚本</b>
+      <span class="muted" id="spHint">纯数据 JSON · 支持 $参数 · 每步可写 expect 做几何校验</span>
+    </div>
+    <textarea id="spText" spellcheck="false" autocapitalize="off" autocorrect="off" wrap="off"
+      placeholder='{"v":1,"params":{"L":80},"steps":[{"op":{"type":"primitive","shape":"box","size":["$L",60,12]},"expect":{"volume":"$L*60*12"}}]}'></textarea>
+    <div class="sp-btns">
+      <button id="spRun" class="primary">运行（重建模型）</button>
+      <button id="spAppend">追加到当前模型</button>
+      <button id="spUndo" class="ghost" disabled>撤销本次运行</button>
+    </div>
+    <div class="sp-btns">
+      <button id="spTemplate" class="ghost">示例</button>
+      <button id="spImport" class="ghost">导入脚本…</button>
+      <button id="spExport" class="ghost">当前模型→脚本</button>
+      <button id="spClose" class="ghost">关闭</button>
+    </div>
+    <div id="spReport" class="sp-report muted">脚本写错或几何校验不过，都不会动当前模型。</div>
+  </div>
+  <input type="file" id="scriptFileInput" accept=".json,application/json" hidden />
+
+  <div id="saveDialog" class="panel hidden">
+    <div class="sd-title" id="sdTitle">保存工程</div>
+    <div class="sd-row">
+      <span class="dp-label">名称</span>
+      <input id="saveName" type="text" placeholder="例如：支架 v2" />
+    </div>
+    <div class="sd-btns">
+      <button data-sdact="ok" class="primary" id="sdOk">保存</button>
+      <button data-sdact="cancel">取消</button>
+    </div>
+    <div class="sd-btns">
+      <button data-sdact="export">导出工程文件</button>
+      <button data-sdact="import">导入工程文件</button>
+    </div>
+    <p class="sd-meta">保存到当前浏览器；跨设备使用或备份，请导出工程文件。</p>
+    <input type="file" id="projectFileInput" accept=".json,.padcad" hidden />
+    <div class="sd-list" id="saveList"></div>
+  </div>
+
+  <!-- 左侧：真正的特征树（结构视角，仿 SolidWorks），和右侧的历史记录分开 -->
+  <aside id="featTree" class="panel">
+    <div class="ft-head">
+      <b>模型浏览器</b>
+      <div class="ft-actions">
+        <button id="btnUndo" title="撤销">↶</button>
+        <button id="btnRedo" title="重做">↷</button>
+        <button id="btnFeatToggle" title="收起">◀</button>
+      </div>
+    </div>
+    <div id="ftList"></div>
+    <div class="ft-foot" id="ftHint">双击特征可改名</div>
+  </aside>
+  <button id="btnFeatShow" class="panel hidden" title="展开特征树">▶ 特征树</button>
+
+  <!-- 右侧：特征树（像 SolidWorks 那样按顺序列出每一步，可点回退） -->
+  <aside id="tree" class="panel">
+    <div class="tree-head">
+      <b>设计历史</b>
+      <div class="tree-actions">
+        <button id="btnTreeHide" title="收起历史时间线">⌄</button>
+      </div>
+    </div>
+    <div id="treeList"></div>
+    <div class="tree-foot" id="treeHint" title="点任意一步可回到那个状态 · 带 ✎ 的步可改参数重放">点一步回退 · ✎ 改参数</div>
+  </aside>
+  <button id="btnTreeShow" class="panel hidden" title="展开历史时间线">⌃ 历史</button>
+
+  <!-- 编辑特征属性面板：独立浮层，不能嵌在右侧面板里 ——
+       那个面板默认是收起的，嵌进去就等于看不见 -->
+  <div id="featPanel" class="panel hidden">
+    <div class="fp-head">
+      <span class="fp-ico" id="featIco">⬒</span>
+      <span class="fp-title" id="featTitle">修改特征</span>
+      <span class="fp-acts">
+        <button id="featOk" title="确定">✔</button>
+        <button id="featX" title="取消">✖</button>
+        <button id="featEye" title="预览">👁</button>
+      </span>
+    </div>
+    <div class="fp-group">
+      <div class="fp-gtitle"><span id="featGroupName">方向 1</span></div>
+      <div class="fp-row">
+        <span class="fp-label" id="featLabel">参数</span>
+        <input id="featVal" type="number" step="0.5" inputmode="decimal" />
+      </div>
+    </div>
+    <div class="fp-hint" id="featHint"></div>
+  </div>
+
+  <!-- 从锚点连到手柄的引线。必须是独立元素：父级 #dimHandle 自己带 transform，
+       引线挂在里面会被二次平移，直接飘到屏幕外 -->
+  <div id="dimLeader"></div>
+
+  <!-- 智能尺寸：点两个面 → 设定它们的距离 -->
+  <div id="smartPad" class="panel hidden">
+    <div class="fp-head">
+      <span class="fp-ico">⟷</span>
+      <span class="fp-title" id="spTitle">智能尺寸</span>
+      <span class="fp-acts">
+        <button id="spOk" title="确定">✔</button>
+        <button id="spX" title="取消">✖</button>
+        <button id="spEye" title="预览">👁</button>
+      </span>
+    </div>
+    <div class="fp-group">
+      <div class="fp-gtitle"><span id="spRef">先点第一个面，再点第二个面</span></div>
+      <div class="fp-row">
+        <span class="fp-label">距离（mm）</span>
+        <input id="spVal" type="number" step="0.5" inputmode="decimal" />
+      </div>
+    </div>
+    <div class="fp-hint" id="spHint"></div>
+  </div>
+
+  <!-- 尺寸手柄：看得见 / 拖得动 / 点得改 -->
+  <div id="dimHandle" class="hidden">
+    <div class="dim-dot" id="dimDot"></div>
+    <div class="dim-value" id="dimValue"></div>
+  </div>
+
+  <!-- ============ 本轮新接的特征 / 检查 / 草图数值浮层 ============
+       坐标用内联样式写死：workspace-ui.css 的命令面板定位是按 ID 白名单写的，
+       本轮不允许动那个文件，所以新浮层自己带定位，效果与 .panel 命令位一致。 -->
+  <div id="measurePad" class="panel hidden"
+       style="top:calc(var(--workspace-top,52px) + 12px);left:auto;right:calc(var(--rightw,76px) + 12px);bottom:auto;width:330px;max-height:calc(100dvh - var(--workspace-top,52px) - var(--workspace-bottom,95px) - 24px);overflow-y:auto;z-index:48">
+    <div class="row" style="justify-content:space-between">
+      <b>检查 · 质量属性</b>
+      <button type="button" id="mPadX" class="ghost" style="min-height:44px;padding:6px 12px">关闭</button>
+    </div>
+    <div id="mPadBody" style="margin-top:10px;font-size:13px;line-height:1.8"></div>
+  </div>
+
+  <!-- 孔向导：先点面（拾取）→ 选孔型 → 填尺寸 → 应用。op 里只存 at/normal 等几何意图，不存 faceId -->
+  <div id="holePad" class="panel hidden"
+       style="top:calc(var(--workspace-top,52px) + 12px);left:auto;right:calc(var(--rightw,76px) + 12px);bottom:auto;width:322px;max-height:calc(100dvh - var(--workspace-top,52px) - var(--workspace-bottom,95px) - 24px);overflow-y:auto;z-index:48">
+    <div class="row"><b>孔向导</b><span class="muted" id="holeHint" style="font-size:12px">先在模型上点一个平面</span></div>
+    <div style="margin-top:10px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:13px">
+        <span style="min-width:66px;color:#5a6d82">孔型</span>
+        <select id="holeKind" style="flex:1;min-height:44px;padding:6px 10px;border:1px solid #cfd8e3;border-radius:8px;font-size:15px;background:#fff;color:#1a2736">
+          <option value="through">通孔</option>
+          <option value="blind">盲孔</option>
+          <option value="counterbore">沉头孔</option>
+          <option value="countersink">埋头孔</option>
+        </select>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:13px">
+        <span style="min-width:66px;color:#5a6d82">孔径 Ø</span>
+        <input id="holeDia" type="number" inputmode="decimal" step="0.5" value="6"
+               style="flex:1;min-height:44px;padding:6px 10px;border:1px solid #cfd8e3;border-radius:8px;font-size:15px;text-align:right;background:#fff;color:#1a2736" />
+        <span class="muted" style="font-size:12px">mm</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:13px">
+        <span style="min-width:66px;color:#5a6d82">深度</span>
+        <input id="holeDepth" type="number" inputmode="decimal" step="1" value="4"
+               style="flex:1;min-height:44px;padding:6px 10px;border:1px solid #cfd8e3;border-radius:8px;font-size:15px;text-align:right;background:#fff;color:#1a2736" />
+        <span class="muted" style="font-size:12px">mm</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:13px">
+        <span style="min-width:66px;color:#5a6d82">沉头径</span>
+        <input id="holeHeadDia" type="number" inputmode="decimal" step="0.5" value="12"
+               style="flex:1;min-height:44px;padding:6px 10px;border:1px solid #cfd8e3;border-radius:8px;font-size:15px;text-align:right;background:#fff;color:#1a2736" />
+        <span class="muted" style="font-size:12px">mm</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:13px">
+        <span style="min-width:66px;color:#5a6d82">沉头深</span>
+        <input id="holeHeadDepth" type="number" inputmode="decimal" step="0.5" value="2"
+               style="flex:1;min-height:44px;padding:6px 10px;border:1px solid #cfd8e3;border-radius:8px;font-size:15px;text-align:right;background:#fff;color:#1a2736" />
+        <span class="muted" style="font-size:12px">mm</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:13px">
+        <span style="min-width:66px;color:#5a6d82">埋头角</span>
+        <input id="holeAngle" type="number" inputmode="decimal" step="5" value="90"
+               style="flex:1;min-height:44px;padding:6px 10px;border:1px solid #cfd8e3;border-radius:8px;font-size:15px;text-align:right;background:#fff;color:#1a2736" />
+        <span class="muted" style="font-size:12px">°</span>
+      </div>
+    </div>
+    <div class="row" style="margin-top:10px;gap:8px">
+      <button id="holeGo" class="primary" style="min-height:44px;padding:8px 16px">应用</button>
+      <button id="holeRePick" style="min-height:44px;padding:8px 12px">重新点面</button>
+      <button id="holeClose" class="ghost" style="min-height:44px;padding:8px 12px">取消</button>
+    </div>
+    <div class="dp-hint" style="margin-top:8px">点面决定孔心与朝向：通孔沿 −法向穿透，盲孔/沉头/埋头只挖设定深度</div>
+  </div>
+
+  <!-- 实体特征（布尔 / 分割 / 移动面 / 加厚）：表单由 main.js 按当前工具动态生成 -->
+  <div id="solidPad" class="panel hidden"
+       style="top:calc(var(--workspace-top,52px) + 12px);left:auto;right:calc(var(--rightw,76px) + 12px);bottom:auto;width:322px;max-height:calc(100dvh - var(--workspace-top,52px) - var(--workspace-bottom,95px) - 24px);overflow-y:auto;z-index:48">
+    <div class="row"><b id="solidPadTitle">布尔</b><span class="muted" id="solidPadHint" style="font-size:12px"></span></div>
+    <div id="solidPadBody" style="margin-top:10px"></div>
+    <div class="row" style="margin-top:10px;gap:8px">
+      <button id="solidGo" class="primary" style="min-height:44px;padding:8px 16px">应用</button>
+      <button id="solidClose" class="ghost" style="min-height:44px;padding:8px 12px">取消</button>
+    </div>
+    <div class="dp-hint" id="solidPadFoot" style="margin-top:8px"></div>
+  </div>
+
+  <!-- 曲面（偏移 / 加厚 / 补面 / 缝合）：同样动态生成表单 -->
+  <div id="surfacePad" class="panel hidden"
+       style="top:calc(var(--workspace-top,52px) + 12px);left:auto;right:calc(var(--rightw,76px) + 12px);bottom:auto;width:322px;max-height:calc(100dvh - var(--workspace-top,52px) - var(--workspace-bottom,95px) - 24px);overflow-y:auto;z-index:48">
+    <div class="row"><b id="surfacePadTitle">曲面偏移</b><span class="muted" id="surfacePadHint" style="font-size:12px"></span></div>
+    <div id="surfacePadBody" style="margin-top:10px"></div>
+    <div class="row" style="margin-top:10px;gap:8px">
+      <button id="surfaceGo" class="primary" style="min-height:44px;padding:8px 16px">应用</button>
+      <button id="surfaceClose" class="ghost" style="min-height:44px;padding:8px 12px">取消</button>
+    </div>
+    <div class="dp-hint" id="surfacePadFoot" style="margin-top:8px"></div>
+  </div>
+
+  <!-- 曲面：右轨「曲面」按钮旁边弹出的子菜单（flyout）。
+       轨道竖向只剩 ~69px，塞不下四个入口，所以轨道只留「曲面」一个主按钮，
+       四个入口竖排在子菜单里；位置由 src/workspace-ui.js 按按钮位置现场计算。 -->
+  <div id="surfaceGroupPad" class="panel surface-flyout hidden" role="menu" aria-label="曲面工具">
+    <div class="flyout-head"><b>曲面</b><span class="flyout-hint">选一个入口</span></div>
+    <div id="sgPadBody" class="flyout-list" role="none"></div>
+    <div class="flyout-foot">补面 / 缝合完成后会自动适应内容</div>
+  </div>
+
+  <!-- 草图数值工具（多边形 / 槽口 / 三点圆弧 / 椭圆 / 裁剪）：表单动态生成
+       放在**左下角**而不是左上：草图工具条在顶部居中、会折成两行，
+       浮层放左上会把它整排「撤销 / 取消 / 完成」盖住（实测点不到）。 -->
+  <div id="skToolPad" class="panel hidden"
+       style="top:auto;bottom:calc(var(--workspace-bottom,95px) + 12px);left:calc(var(--leftw,76px) + 12px);right:auto;width:300px;max-height:calc(100dvh - var(--workspace-top,52px) - var(--workspace-bottom,95px) - 120px);overflow-y:auto;z-index:49">
+    <div class="row"><b id="skToolTitle">多边形</b><span class="muted" style="font-size:12px">草图参数</span></div>
+    <div id="skToolBody" style="margin-top:10px"></div>
+    <div class="row" style="margin-top:10px;gap:8px">
+      <button id="skToolGo" class="primary" style="min-height:44px;padding:8px 16px">生成</button>
+      <button id="skToolClose" class="ghost" style="min-height:44px;padding:8px 12px">取消</button>
+    </div>
+    <div class="dp-hint" style="margin-top:8px">数值是草图内 2D 坐标（mm），原点在当前草图平面上</div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

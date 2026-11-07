@@ -1,0 +1,651 @@
+:root {
+  --bg: #14161a;
+  --panel: rgba(30, 33, 39, 0.86);
+  --fg: #e8eaed;
+  --muted: #9aa0a6;
+  --accent: #4c8dff;
+  --ok: #34c759;
+  --warn: #ff9f0a;
+  --border: rgba(255, 255, 255, 0.12);
+  --treew: 250px;          /* 特征树宽度；收起时由 body 类置 0 */
+  --ftw: 232px;            /* 左侧结构树宽度 */
+  /* 侧栏实际占用的宽度：侧栏一开，中下部的浮层就要在「剩余区域」里居中，
+     否则 left:50% + translateX(-50%) 会和侧栏偏移叠加，把工具条挤到侧栏底下 */
+  --leftw: 0px;
+  --rightw: 0px;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  margin: 0; padding: 0; height: 100%; overflow: hidden;
+  background: var(--bg); color: var(--fg);
+  font: 15px/1.45 -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  /* 关键：禁掉浏览器的滚动/缩放/双击缩放，手势全部交给我们自己处理 */
+  touch-action: none;
+  overscroll-behavior: none;
+  user-select: none; -webkit-user-select: none;
+}
+
+/* 画布给特征树让出右侧空间。
+   注意 canvas 是 replaced element：width:auto 时它会用属性内在尺寸（默认 300×150），
+   不会被 left/right 拉伸 —— 必须显式给宽度，用 calc 让出树的宽度。 */
+#view {
+  position: fixed; top: 0; left: 0;
+  width: 100%; height: 100%; display: block;
+}
+body.tree-open #view { width: calc(100% - var(--treew)); }
+
+/* ---------- 尺寸标注面板 ---------- */
+#dimPanel {
+  position: fixed; right: calc(var(--rightw) + 14px); top: 88px; width: 208px;
+  max-width: calc(100vw - var(--leftw) - var(--rightw) - 28px);
+  padding: 10px 12px; border-radius: 12px; z-index: 25;
+  display: flex; flex-direction: column; gap: 8px;
+}
+#dimPanel.hidden { display: none; }
+.dp-title { font-size: 12px; font-weight: 600; }
+.dp-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.dp-label { font-size: 12px; color: var(--muted); }
+#dimPanel input {
+  width: 88px; padding: 6px 8px; border-radius: 8px;
+  background: #0d0f12; border: 1px solid var(--border); color: var(--fg);
+  font-size: 13px; text-align: right;
+}
+.dp-hint { font-size: 11px; color: var(--muted); line-height: 1.5; }
+
+/* ---------- 捕捉覆盖层 ---------- */
+/* 位置与尺寸由 JS 按主画布的 rect 同步，永远不吃触摸事件（否则草图就画不了了） */
+#snapOverlay {
+  position: fixed; top: 0; left: 0;
+  pointer-events: none; z-index: 15;
+}
+
+/* ---------- 特征树 ---------- */
+#tree {
+  position: fixed; top: 0; right: 0; bottom: 0;
+  width: var(--treew);
+  border-radius: 0; border-right: none; border-top: none; border-bottom: none;
+  display: flex; flex-direction: column;
+  padding: 0; z-index: 40;
+  transform: translateX(100%);
+  transition: transform .18s ease;
+}
+body.tree-open #tree { transform: none; }
+
+.tree-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 12px 8px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.tree-actions { display: flex; gap: 4px; }
+.tree-actions button {
+  width: 38px; height: 38px; border-radius: 9px;
+  border: 1px solid var(--border); background: rgba(255,255,255,.06);
+  color: var(--fg); font-size: 17px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.tree-actions button:active { background: rgba(255,255,255,.16); }
+.tree-actions button:disabled { opacity: .32; }
+
+#treeList { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 6px; touch-action: pan-y; }
+.tree-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 10px; border-radius: 8px; cursor: pointer;
+  font-size: 14px; margin-bottom: 2px;
+}
+.tree-item:active { background: rgba(255,255,255,.08); }
+.tree-item.cur { background: rgba(76, 141, 255, .22); color: #cfe0ff; }
+.tree-item.future { opacity: .38; }
+.tree-item .ico {
+  flex: 0 0 auto; width: 22px; height: 22px; border-radius: 6px;
+  background: rgba(255,255,255,.12);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px;
+}
+.tree-item.cur .ico { background: var(--accent); color: #fff; }
+.tree-item .nm { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-item .dt { flex: 0 0 auto; font-size: 11px; color: var(--muted); }
+
+/* 草图子节点：缩进一层，像个"挂在特征底下"的东西 */
+.tree-item.sub {
+  padding-left: 22px;
+  background: rgba(255,255,255,.025);
+}
+.tree-item.sub .ico { background: #2a2f38; color: #9fb4d0; }
+.tree-item.sub .nm { color: #b9c6d8; }
+
+/* 可改参数的步：右侧一个 ✎ */
+.tree-item .ed {
+  flex: 0 0 auto; padding: 2px 7px; border-radius: 6px;
+  color: var(--muted); font-size: 13px; cursor: pointer;
+}
+.tree-item .ed:hover { background: var(--accent); color: #fff; }
+
+/* 改历史参数的浮层（仿 SolidWorks 属性管理器：✔ 确定 / ✖ 取消 / 👁 预览）
+   注意是 fixed 定位、独立于任何侧栏 —— 曾经嵌在右侧面板里，
+   而那个面板默认收起，结果面板压根看不见 */
+#featPanel {
+  position: fixed; right: calc(var(--rightw) + 14px); bottom: 96px; width: 268px;
+  max-width: calc(100vw - var(--leftw) - var(--rightw) - 28px);
+  padding: 11px 13px 12px; border-radius: 12px;
+  display: flex; flex-direction: column; gap: 9px;
+  z-index: 45; background: var(--card);
+}
+#featPanel.hidden { display: none; }
+.fp-head { display: flex; align-items: center; gap: 7px; }
+.fp-ico {
+  width: 20px; height: 20px; border-radius: 5px; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+  background: #232830; color: #9fb4d0; font-size: 12px;
+}
+.fp-title { flex: 1 1 auto; font-size: 13px; font-weight: 600; }
+.fp-acts { display: flex; gap: 3px; flex: 0 0 auto; }
+.fp-acts button {
+  width: 28px; height: 26px; border-radius: 7px; cursor: pointer;
+  background: #1b2028; border: 1px solid var(--border); color: var(--fg);
+  font-size: 12px; line-height: 1; padding: 0;
+}
+#featOk { color: #6ee7a8; }
+#featOk:hover { background: rgba(80,220,140,.18); }
+#featX { color: #ff8a8a; }
+#featX:hover { background: rgba(255,90,90,.18); }
+#featEye.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+.fp-group {
+  border: 1px solid var(--border); border-radius: 9px;
+  padding: 8px 10px 10px; background: #12161d;
+}
+.fp-gtitle { font-size: 11px; color: var(--muted); margin-bottom: 7px; }
+.fp-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.fp-label { font-size: 12px; color: var(--muted); }
+#featVal {
+  width: 104px; padding: 7px 9px; border-radius: 8px;
+  background: #0d0f12; border: 1px solid var(--border); color: var(--fg);
+  font-size: 14px; text-align: right;
+}
+#featVal:focus { outline: none; border-color: var(--accent); }
+.fp-hint { font-size: 11px; color: var(--muted); line-height: 1.5; }
+.tree-foot {
+  flex: 0 0 auto; padding: 8px 12px 12px;
+  font-size: 11px; color: var(--muted); border-top: 1px solid var(--border);
+}
+
+#btnTreeShow {
+  top: 50%; right: 0; transform: translateY(-50%);
+  border-radius: 12px 0 0 12px; border-right: none;
+  padding: 14px 10px; font-size: 13px; cursor: pointer; color: var(--fg);
+}
+
+.panel {
+  position: fixed;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 14px;
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  z-index: 10;
+}
+
+#status { top: max(14px, env(safe-area-inset-top)); left: calc(var(--leftw) + 14px); min-width: 190px; font-size: 13px; }
+.row { display: flex; align-items: center; gap: 8px; }
+.row.muted { color: var(--muted); font-size: 12px; margin-top: 4px; display: block; }
+.dot {
+  width: 9px; height: 9px; border-radius: 50%; background: var(--warn);
+  flex: 0 0 auto; transition: background .2s;
+}
+.dot.ok { background: var(--ok); }
+.dot.err { background: #ff453a; }
+
+#toolbar {
+  bottom: max(16px, env(safe-area-inset-bottom));
+  left: calc(var(--leftw) + (100vw - var(--leftw) - var(--rightw)) / 2);
+  transform: translateX(-50%);
+  display: flex; gap: 6px; padding: 8px;
+  max-width: calc(100vw - var(--leftw) - var(--rightw) - 28px);
+}
+#toolbar button {
+  appearance: none; border: 1px solid transparent; background: transparent;
+  color: var(--fg); font: inherit; font-size: 14px;
+  padding: 10px 16px; border-radius: 9px; cursor: pointer;
+  white-space: nowrap; min-height: 44px;      /* 触摸目标 ≥44px */
+}
+#toolbar button:active { background: rgba(255, 255, 255, 0.08); }
+#toolbar button.on { background: var(--accent); color: #fff; }
+
+#picker {
+  top: max(14px, env(safe-area-inset-top));
+  right: calc(var(--rightw) + 14px); max-width: 240px; font-size: 13px; line-height: 1.6;
+}
+#picker b { color: var(--accent); }
+.hidden { display: none !important; }
+
+/* 草图工具条 */
+#sketchbar {
+  bottom: max(16px, env(safe-area-inset-bottom));
+  left: calc(var(--leftw) + (100vw - var(--leftw) - var(--rightw)) / 2);
+  transform: translateX(-50%);
+  display: flex; align-items: center; gap: 6px; padding: 8px;
+  max-width: calc(100vw - var(--leftw) - var(--rightw) - 28px); flex-wrap: wrap;
+}
+#sketchbar .tag {
+  font-size: 12px; color: #2ee6a8; border: 1px solid #2ee6a8;
+  border-radius: 6px; padding: 3px 8px; margin-left: 4px;
+}
+#sketchbar button {
+  appearance: none; border: 1px solid transparent; background: transparent;
+  color: var(--fg); font: inherit; font-size: 14px;
+  padding: 10px 14px; border-radius: 9px; cursor: pointer;
+  min-height: 44px; white-space: nowrap;
+}
+#sketchbar button.on { background: rgba(46, 230, 168, .22); color: #2ee6a8; }
+#sketchbar button.primary { background: var(--accent); color: #fff; }
+#sketchbar button.ghost { background: rgba(255,255,255,.1); }
+
+/* 拉伸面板 */
+#extrude {
+  bottom: max(16px, env(safe-area-inset-bottom));
+  left: calc(var(--leftw) + (100vw - var(--leftw) - var(--rightw)) / 2);
+  transform: translateX(-50%);
+  min-width: 280px; font-size: 14px;
+}
+#extrude input {
+  width: 100px; background: #0d0f12; border: 1px solid var(--border);
+  color: var(--fg); border-radius: 8px; padding: 10px; font: inherit; font-size: 16px;
+}
+#extrude button {
+  border: 1px solid transparent; background: rgba(255,255,255,.1);
+  color: var(--fg); border-radius: 9px; padding: 10px 16px; font: inherit;
+  min-height: 44px; cursor: pointer;
+}
+#extrude button.primary { background: var(--accent); color: #fff; }
+#extrude .muted { color: var(--muted); font-size: 12px; margin-left: 6px; }
+
+/* 圆角/倒角/抽壳 面板 */
+#edgebar {
+  bottom: max(16px, env(safe-area-inset-bottom));
+  left: calc(var(--leftw) + (100vw - var(--leftw) - var(--rightw)) / 2);
+  transform: translateX(-50%);
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  max-width: calc(100vw - var(--leftw) - var(--rightw) - 28px); flex-wrap: wrap;
+}
+#edgebar .tag {
+  font-size: 12px; color: #ff7a1a; border: 1px solid #ff7a1a;
+  border-radius: 6px; padding: 3px 8px; margin-left: 4px;
+}
+#edgebar input {
+  width: 88px; background: #0d0f12; border: 1px solid var(--border);
+  color: var(--fg); border-radius: 8px; padding: 10px; font: inherit; font-size: 16px;
+}
+#edgebar button {
+  border: 1px solid transparent; background: rgba(255,255,255,.1);
+  color: var(--fg); border-radius: 9px; padding: 10px 14px; font: inherit;
+  min-height: 44px; cursor: pointer; white-space: nowrap;
+}
+#edgebar button.primary { background: var(--accent); color: #fff; }
+#edgebar .muted { color: var(--muted); font-size: 12px; }
+
+/* 工具栏项变多时允许换行，平板竖屏也能全放下 */
+#toolbar { flex-wrap: wrap; justify-content: center; }
+
+/* ---------- 尺寸手柄（圆角圆心 / 拉伸深度 等）---------- */
+#dimHandle {
+  position: fixed; left: 0; top: 0;
+  width: 36px; height: 36px;
+  /* 要盖在所有面板之上：曾经是 30，会被左右侧栏和底部工具条压住 */
+  z-index: 70;
+  pointer-events: none;      /* 只有子元素可点，避免挡住画布手势 */
+  touch-action: none;
+}
+#dimHandle.hidden { display: none; }
+
+/* 手柄被推出画布时，用它连回锚点，告诉用户"要往那个方向拖"。
+   独立于 #dimHandle：那个容器自己带 transform，子元素会被二次平移 */
+#dimLeader {
+  position: fixed; left: 0; top: 0; height: 0; width: 0;
+  border-top: 2px dashed rgba(255, 122, 26, .85);
+  transform-origin: 0 0;
+  pointer-events: none;
+  z-index: 69;              /* 比手柄低一层，别盖住可拖的那个点 */
+  display: none;
+}
+#dimLeader.on { display: block; }
+
+/* 被夹住时手柄改成虚线边框，和"就在眼前"的状态区分开 */
+#dimHandle.clamped .dim-dot {
+  background: rgba(255, 122, 26, .62);
+  border-style: dashed;
+}
+
+.dim-dot {
+  position: absolute; left: 0; top: 0;
+  width: 36px; height: 36px; border-radius: 50%;
+  background: rgba(255, 122, 26, .92);
+  border: 2.5px solid #fff;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, .55);
+  pointer-events: auto;
+  cursor: grab;
+  touch-action: none;
+  transition: transform .08s;
+}
+#dimHandle.dragging .dim-dot { transform: scale(1.15); cursor: grabbing; }
+
+/* 从圆心到数值标签的引线 */
+.dim-value {
+  position: absolute; left: 44px; top: 1px;
+  height: 34px; display: flex; align-items: center;
+  background: #ff7a1a; color: #fff;
+  border: 2px solid #fff;
+  border-radius: 9px; padding: 0 12px;
+  font-size: 15px; font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, .5);
+  pointer-events: auto;
+  cursor: pointer;
+  touch-action: none;
+}
+.dim-value input {
+  width: 82px; border: none; outline: none;
+  background: #fff; color: #111; border-radius: 6px;
+  padding: 4px 6px; font: inherit; font-size: 15px;
+  text-align: center;
+}
+/* 手柄贴到画布右边时，数值标签改放到左侧（否则直接被挤出屏幕） */
+#dimHandle.flip .dim-value { left: auto; right: 44px; }
+
+/* 智能尺寸面板：和编辑特征面板错开位置，避免叠在一起 */
+#smartPad {
+  position: fixed; right: calc(var(--rightw) + 14px); bottom: 96px; width: 268px;
+  max-width: calc(100vw - var(--leftw) - var(--rightw) - 28px);
+  padding: 11px 13px 12px; border-radius: 12px;
+  display: flex; flex-direction: column; gap: 9px;
+  z-index: 46; background: var(--card);
+}
+#smartPad.hidden { display: none; }
+#spVal {
+  width: 104px; padding: 7px 9px; border-radius: 8px;
+  background: #0d0f12; border: 1px solid var(--border); color: var(--fg);
+  font-size: 14px; text-align: right;
+}
+#spVal:focus { outline: none; border-color: var(--accent); }
+#spOk { color: #6ee7a8; }
+#spX { color: #ff8a8a; }
+#spEye.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* 数值输入气泡（推拉时弹出） */
+#numpad {
+  position: fixed; bottom: 90px;
+  left: calc(var(--leftw) + (100vw - var(--leftw) - var(--rightw)) / 2);
+  transform: translateX(-50%);
+  display: flex; gap: 8px; align-items: center;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 12px; padding: 8px 10px; z-index: 20;
+  backdrop-filter: blur(14px);
+}
+#numpad input {
+  width: 110px; background: #0d0f12; border: 1px solid var(--border);
+  color: var(--fg); border-radius: 8px; padding: 10px; font: inherit; font-size: 16px;
+}
+#numpad button {
+  border: none; background: var(--accent); color: #fff;
+  border-radius: 8px; padding: 10px 16px; font: inherit; min-height: 44px;
+}
+#numpad .ghost { background: rgba(255,255,255,.1); }
+
+/* ---------- 智能尺寸：标完弹出的数值编辑框 ---------- */
+.dim-edit {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(32, 34, 40, 0.97);
+  border: 1px solid #4a4f5c;
+  border-radius: 12px;
+  padding: 14px 16px;
+  min-width: 210px;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.55);
+  z-index: 90;
+  color: var(--foreground, #e8e8ea);
+}
+.dim-edit .de-title { font-size: 13px; opacity: 0.8; margin-bottom: 10px; text-align: center; }
+.dim-edit .de-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.dim-edit .de-row.de-btns { margin-bottom: 0; gap: 10px; }
+.dim-edit input {
+  flex: 1; min-width: 90px; padding: 8px 10px; font-size: 16px;
+  background: #16181d; border: 1px solid #4a4f5c; border-radius: 7px; color: #fff;
+  text-align: right;
+}
+.dim-edit input:focus { outline: none; border-color: var(--accent, #4a9eff); }
+.dim-edit .de-unit { opacity: 0.7; font-size: 13px; min-width: 22px; }
+.dim-edit button {
+  flex: 1; padding: 9px 12px; font-size: 14px; border-radius: 7px;
+  border: 1px solid #4a4f5c; background: #2a2d34; color: #e8e8ea; cursor: pointer;
+}
+.dim-edit button.primary { background: var(--accent, #4a9eff); border-color: transparent; color: #fff; font-weight: 600; }
+.dim-edit button:active { transform: scale(0.97); }
+
+/* ---------- 关系（几何约束）面板 ---------- */
+#relPad {
+  position: fixed;
+  left: calc(var(--leftw) + (100vw - var(--leftw) - var(--rightw)) / 2);
+  transform: translateX(-50%);
+  bottom: 96px;
+  background: rgba(32, 34, 40, 0.97);
+  border: 1px solid #4a4f5c;
+  border-radius: 12px;
+  padding: 12px 14px;
+  min-width: min(320px, calc(100vw - var(--leftw) - var(--rightw) - 28px));
+  max-width: min(560px, calc(100vw - var(--leftw, 0px) - var(--rightw, 0px) - 40px));
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.55);
+  z-index: 75;
+  color: var(--foreground, #e8e8ea);
+}
+#relPad .rel-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 8px;
+}
+#relPad .rel-btns button {
+  padding: 9px 14px;
+  font-size: 14px;
+  border-radius: 8px;
+  border: 1px solid #4a4f5c;
+  background: #2a2d34;
+  color: #e8e8ea;
+  cursor: pointer;
+}
+#relPad .rel-btns button:active { transform: scale(0.96); }
+#relPad .rel-btns button:hover { border-color: var(--accent, #4a9eff); }
+#relPad .rel-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  border-top: 1px solid #3a3f4a;
+  padding-top: 8px;
+}
+#relPad .rel-foot span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#relPad .rel-foot button {
+  padding: 6px 12px; font-size: 13px; border-radius: 7px;
+  border: 1px solid #4a4f5c; background: #2a2d34; color: #e8e8ea; cursor: pointer;
+}
+
+/* ---------- 草图变换面板 ---------- */
+#xformPad {
+  position: fixed;
+  left: calc(var(--leftw) + (100vw - var(--leftw) - var(--rightw)) / 2);
+  transform: translateX(-50%);
+  bottom: 96px;
+  background: rgba(32, 34, 40, 0.97);
+  border: 1px solid #4a4f5c;
+  border-radius: 12px;
+  padding: 12px 14px;
+  min-width: min(300px, calc(100vw - var(--leftw) - var(--rightw) - 28px));
+  max-width: min(520px, calc(100vw - var(--leftw, 0px) - var(--rightw, 0px) - 40px));
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.55);
+  z-index: 76;
+  color: var(--foreground, #e8e8ea);
+}
+#xformPad .xf-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+#xformPad .xf-tabs button {
+  flex: 1; padding: 8px 10px; font-size: 14px; border-radius: 8px;
+  border: 1px solid #4a4f5c; background: #2a2d34; color: #e8e8ea; cursor: pointer;
+}
+#xformPad .xf-tabs button.on { background: var(--accent, #4a9eff); border-color: transparent; color: #fff; font-weight: 600; }
+#xformPad .xf-row {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 13px;
+}
+#xformPad .xf-row > span:first-child { min-width: 62px; opacity: 0.85; }
+#xformPad .xf-row input[type=number] {
+  flex: 1; min-width: 60px; padding: 7px 9px; font-size: 15px; text-align: right;
+  background: #16181d; border: 1px solid #4a4f5c; border-radius: 7px; color: #fff;
+}
+#xformPad .xf-row select {
+  flex: 1; padding: 7px 9px; font-size: 14px;
+  background: #16181d; border: 1px solid #4a4f5c; border-radius: 7px; color: #fff;
+}
+#xformPad .xf-row button {
+  flex: 1; padding: 9px 12px; font-size: 14px; border-radius: 7px;
+  border: 1px solid #4a4f5c; background: #2a2d34; color: #e8e8ea; cursor: pointer;
+}
+#xformPad .xf-row button.primary { background: var(--accent, #4a9eff); border-color: transparent; color: #fff; font-weight: 600; }
+#xformPad #xfClose {
+  padding: 6px 12px; font-size: 13px; border-radius: 7px;
+  border: 1px solid #4a4f5c; background: #2a2d34; color: #e8e8ea; cursor: pointer;
+}
+
+/* ---------- 坐标系指示器（仿 Fusion 360 右下角那个） ---------- */
+#axisGizmo {
+  position: fixed;
+  right: calc(var(--rightw) + 14px);
+  bottom: 46px;
+  width: 96px;
+  height: 96px;
+  z-index: 40;
+  pointer-events: none;
+  opacity: 0.95;
+}
+#axisGizmo text {
+  font-family: var(--app-font, system-ui, sans-serif);
+  font-size: 12px;
+  font-weight: 700;
+  paint-order: stroke;
+  stroke: rgba(0, 0, 0, 0.65);
+  stroke-width: 3px;
+}
+
+/* ---------- 比例尺（右下角） ---------- */
+#scaleBar {
+  position: fixed;
+  right: calc(var(--rightw) + 120px);
+  bottom: 52px;
+  z-index: 40;
+  pointer-events: none;
+  font-size: 11px;
+  color: var(--muted-foreground, #9aa0aa);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+#scaleBar i {
+  display: block;
+  height: 8px;
+  border-left: 1px solid currentColor;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  min-width: 20px;
+}
+
+/* ---------- 平面/3D 模式开关 ---------- */
+#modeToggle {
+  position: fixed;
+  right: calc(var(--rightw) + 14px);
+  top: 64px;
+  z-index: 42;
+  padding: 8px 12px;
+  font-size: 13px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #4a4f5c);
+  background: var(--card, rgba(32, 34, 40, 0.94));
+  color: var(--foreground, #e8e8ea);
+  cursor: pointer;
+  min-width: 58px;
+}
+#modeToggle.planar {
+  background: var(--accent, #4a9eff);
+  border-color: transparent;
+  color: #fff;
+  font-weight: 600;
+}
+
+/* ---------- 特征树：每行的操作按钮（删除等） ---------- */
+.ft-node { position: relative; }
+.ft-act {
+  margin-left: auto;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  line-height: 1;
+  padding: 0;
+  font-size: 12px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted-foreground, #9aa0aa);
+  cursor: pointer;
+  opacity: 0.55;
+}
+.ft-node:hover .ft-act { opacity: 1; }
+.ft-act:hover { border-color: #6b4a4a; background: rgba(255, 90, 90, 0.16); color: #ff7b7b; }
+.ft-act.ft-del:active { transform: scale(0.92); }
+
+/* ---------- 特征树：眼睛（压制/解压），参考 Chili3D 的树条目 ---------- */
+.ft-act.ft-eye {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.5;
+}
+.ft-act.ft-eye.off { opacity: 1; color: #ff9f0a; }
+.ft-node:hover .ft-act.ft-eye { opacity: 1; }
+.ft-act.ft-eye:hover { border-color: #4a5a6b; background: rgba(120, 180, 255, 0.14); color: #6fb7ff; }
+/* 被压制的行整行变淡，一眼看出它没参与计算 */
+.ft-node.sup .ft-nm,
+.ft-node.sup .ft-dt { opacity: 0.42; text-decoration: line-through; }
+.ft-node .ft-act.ft-del { margin-left: 2px; }
+
+/* 竖屏/分屏时限制工具区域的高度，所有命令仍可滚动到达。 */
+#axisGizmo { bottom: var(--tool-inset, 150px); }
+#scaleBar { bottom: calc(var(--tool-inset, 150px) + 6px); }
+#modeToggle { top: 94px; left: calc(var(--leftw) + 14px); right: auto; }
+#toolbar, #sketchbar, #edgebar {
+  /* fixed + left:50% 的 auto 宽度只按右半屏收缩，导致宽屏也挤成三行。 */
+  width: max-content;
+  max-height: 42dvh;
+  overflow-y: auto;
+  touch-action: pan-y;
+}
+#featPanel, #smartPad, #relPad, #xformPad {
+  max-height: calc(100dvh - 120px);
+  overflow-y: auto;
+  touch-action: pan-y;
+}
+
+@media (pointer: coarse) {
+  .tree-actions button, .fp-acts button, #modeToggle,
+  #relPad button, #xformPad button, .dim-edit button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .tree-item { min-height: 48px; }
+  .tree-item .ed { min-width: 44px; min-height: 44px; display: grid; place-items: center; }
+  #dimHandle, .dim-dot { width: 44px; height: 44px; }
+  .dim-value { height: 44px; left: 52px; }
+  #dimHandle.flip .dim-value { right: 52px; }
+  #dimPanel input, #featVal, #spVal { min-height: 44px; font-size: 16px; }
+}

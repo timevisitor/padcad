@@ -1,0 +1,30 @@
+# 依赖与构建产物
+node_modules/
+dist/
+out/
+.vite/
+node_modules/.vite*/
+
+# 几何内核（由 npm install 的 postinstall 从依赖里拷入，不进仓库）
+public/replicad_single.wasm
+
+# Android / Capacitor 产物
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/app/src/main/assets/public/
+android/app/src/main/assets/capacitor.config.json
+android/local.properties
+android/capacitor-cordova-android-plugins/
+
+# 打包物
+*.apk
+*.aab
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/

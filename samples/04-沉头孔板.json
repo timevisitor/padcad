@@ -1,0 +1,28 @@
+{
+  "v": 1,
+  "name": "沉头孔板",
+  "_说明": "孔向导的沉头孔：kind=counterbore，at 是孔口在面上的点、normal 是那个面的朝外法向，diameter 是通孔径，headDiameter/headDepth 是沉头盘。体积 = 板 − Ø6 通孔（整厚）− 沉头盘里比通孔粗的那圈环（只到 headDepth 深）：第二个减项是圆环，不是整圆，这是最容易写错的地方。",
+  "params": { "L": 60, "W": 40, "T": 8, "BOLT": 6, "HEAD": 12, "HEAD_D": 2 },
+  "steps": [
+    {
+      "op": { "type": "primitive", "shape": "box", "size": ["$L", "$W", "$T"] },
+      "label": "板 60×40×8",
+      "expect": { "volume": "$L*$W*$T" }
+    },
+    {
+      "op": {
+        "type": "hole",
+        "kind": "counterbore",
+        "at": [0, 0, "$T"],
+        "normal": [0, 0, 1],
+        "diameter": "$BOLT",
+        "headDiameter": "$HEAD",
+        "headDepth": "$HEAD_D"
+      },
+      "label": "Ø6 通孔 + Ø12×2 沉头",
+      "expect": {
+        "volume": "$L*$W*$T - $PI*($BOLT/2)^2*$T - $PI*(($HEAD/2)^2-($BOLT/2)^2)*$HEAD_D"
+      }
+    }
+  ]
+}

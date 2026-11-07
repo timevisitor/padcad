@@ -1,0 +1,17 @@
+{
+  "v": 1,
+  "name": "曲面加厚",
+  "_说明": "surface_fill 用 4 个点围出的闭合轮廓补一张 20×20 平面片体（面积 400；片体没有体积，所以这一步不写体积断言），再用 surface_thicken 沿面法向加厚 3 mm 变成实体，体积 = 400×3。",
+  "params": { "S": 20, "TH": 3 },
+  "steps": [
+    {
+      "op": { "type": "surface_fill", "points": [[0, 0], ["$S", 0], ["$S", "$S"], [0, "$S"]] },
+      "label": "补出 20×20 片体"
+    },
+    {
+      "op": { "type": "surface_thicken", "thickness": "$TH" },
+      "label": "片体加厚 3",
+      "expect": { "volume": "$S*$S*$TH" }
+    }
+  ]
+}

@@ -1,0 +1,345 @@
+/**
+ * Clay 主题 —— token 取自 SolidCraft 的 assets/styles/ui/themes/clay.json
+ * （MIT OR Apache-2.0；只取语义 token 与几何规格，不复制其代码）
+ *
+ * 为什么单独一层：body.workspace-ui 已在 workspace-ui.css 里定义了整套变量。
+ * 这里只覆盖 token 与组件外观，不动布局与行为；换主题只改这一个文件。
+ *
+ * 关键教训（实测）：
+ *  1) Vite 开发态把各 CSS 当 <style> 注入，顺序不稳定；
+ *  2) workspace-ui.css 里有 `:is(#leftToolRail,#rightToolRail) button` 这类高特异性规则；
+ *  所以本文件对"表面色 / 圆角 / 边框"一律加 !important —— 主题层必须是最终裁决者。
+ *
+ * 令牌对照：accent #bf5634 · accent_soft #f0d8ca · app_bar #e6dfd3 · panel #f4eee3
+ * panel_header #f2e9db · control_fill #fdfaf3 · control_border #dcd3c2 · text #2a251f
+ * text_dim #675e50 · selected_bg #f3ddd0 · viewport #f7f2e8→#ebe4d4 · dimension #006a70
+ * error #c71529 · warning #956000 · ok #257231 · radii 6/9/13/18
+ */
+
+body.workspace-ui {
+  --bg: #ebe4d4;
+  --panel: #f4eee3;
+  --card: #f4eee3;
+  --fg: #2a251f;
+  --foreground: #2a251f;
+  --muted: #675e50;
+  --muted-foreground: #675e50;
+  --accent: #bf5634;
+  --accent-soft: #f0d8ca;
+  --brand: #bf5634;
+  --ok: #257231;
+  --warn: #956000;
+  --danger: #c71529;
+  --border: #d6cbb7;
+  --border-soft: #e3dbca;
+  --panel-header: #f2e9db;
+  --app-bar: #e6dfd3;
+  --app-bar-text: #423e36;
+  --control-fill: #fdfaf3;
+  --control-border: #d0c5b0;
+  --selected-bg: #f3ddd0;
+  --selected-ink: #2a251f;
+  --hover-bg: #e6dfd2;
+  --timeline-bg: #f4eee3;
+  --timeline-item: #fdfaf3;
+  --timeline-error: #f2c5c8;
+  --dimension: #006a70;
+  --viewport-top: #f7f2e8;
+  --viewport-bottom: #ebe4d4;
+  --r-sm: 6px;
+  --r-md: 9px;
+  --r-lg: 13px;
+  --r-xl: 18px;
+  --shadow-panel: 0 2px 10px rgba(20, 17, 13, .08), 0 1px 2px rgba(20, 17, 13, .06);
+  --shadow-float: 0 8px 28px rgba(20, 17, 13, .16), 0 2px 6px rgba(20, 17, 13, .08);
+}
+
+body.workspace-ui,
+body.workspace-ui #view {
+  background: radial-gradient(120% 90% at 50% 0%, var(--viewport-top), var(--viewport-bottom));
+}
+
+/* ── 顶栏 ── */
+body.workspace-ui #workspaceHeader {
+  background: var(--app-bar) !important;
+  border-bottom: 1px solid var(--border) !important;
+  border-radius: 0 0 var(--r-lg) var(--r-lg);
+  box-shadow: 0 1px 0 rgba(20, 17, 13, .05);
+  color: var(--app-bar-text);
+}
+body.workspace-ui #workspaceHeader button { background: transparent !important; }
+body.workspace-ui #workspaceHeader button:hover { background: var(--hover-bg) !important; }
+body.workspace-ui .workspace-brand { color: var(--fg); font-weight: 700; letter-spacing: .2px; }
+body.workspace-ui .workspace-brand svg { color: var(--accent); }
+body.workspace-ui #workspaceStatus { color: var(--muted); }
+body.workspace-ui .documentTitle { color: var(--fg); font-weight: 650; letter-spacing: .2px; }
+body.workspace-ui .documentTitle::before {
+  content: "";
+  display: inline-block;
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent);
+  margin-right: 8px;
+  vertical-align: 1px;
+}
+body.workspace-ui .faceCountChip,
+body.workspace-ui .shadeChip,
+body.workspace-ui .appVersion {
+  background: var(--control-fill) !important;
+  border: 1px solid var(--control-border) !important;
+  border-radius: var(--r-sm);
+  color: var(--muted);
+  padding: 2px 8px;
+  font-size: 11.5px;
+}
+
+/* ── 左右工具轨 ── */
+body.workspace-ui #leftToolRail,
+body.workspace-ui #rightToolRail {
+  background: var(--panel) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--r-lg) !important;
+  box-shadow: var(--shadow-panel);
+  padding: 8px 5px;
+}
+body.workspace-ui .rail-groups,
+body.workspace-ui .rail-primary { background: transparent !important; gap: 4px; }
+body.workspace-ui #navigationBar { background: transparent !important; border: 0 !important; }
+body.workspace-ui #navigationBar button {
+  background: var(--control-fill) !important;
+  border: 1px solid var(--control-border) !important;
+  border-radius: var(--r-md) !important;
+}
+body.workspace-ui #bottomActions { background: transparent !important; }
+
+body.workspace-ui .rail-button,
+body.workspace-ui :is(#leftToolRail, #rightToolRail) button {
+  border: 1px solid transparent !important;
+  border-radius: var(--r-md) !important;
+  background: transparent !important;
+  color: var(--fg);
+  transition: background .12s ease, border-color .12s ease, transform .06s ease;
+}
+body.workspace-ui .rail-button:hover,
+body.workspace-ui :is(#leftToolRail, #rightToolRail) button:hover {
+  background: var(--hover-bg) !important;
+  border-color: var(--control-border) !important;
+}
+body.workspace-ui .rail-button:active { transform: scale(.97); }
+body.workspace-ui .rail-button.on,
+body.workspace-ui .rail-button.active,
+body.workspace-ui .rail-button[aria-pressed="true"],
+body.workspace-ui :is(#leftToolRail, #rightToolRail) button.on {
+  background: var(--selected-bg) !important;
+  border-color: var(--accent) !important;
+  color: var(--selected-ink) !important;
+}
+body.workspace-ui .rail-button.on .command-label { font-weight: 600; color: var(--selected-ink); }
+body.workspace-ui .command-label { color: var(--muted); font-size: 11px; letter-spacing: .2px; }
+body.workspace-ui .command-icon { color: currentColor; opacity: .92; }
+
+/* ── 浮层 / 面板 ── */
+body.workspace-ui .panel {
+  background: var(--panel) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-panel);
+  color: var(--fg);
+}
+body.workspace-ui .panel b { color: var(--fg); }
+body.workspace-ui .muted { color: var(--muted); }
+body.workspace-ui .tag {
+  background: var(--accent-soft) !important;
+  color: var(--accent) !important;
+  border: 1px solid #e2bda8 !important;
+  border-radius: var(--r-sm);
+  font-weight: 600;
+}
+
+/* ── 模型浏览器 / 特征树 / 设计历史 ── */
+body.workspace-ui #featTree,
+body.workspace-ui #tree {
+  background: var(--panel) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--r-lg) !important;
+  box-shadow: var(--shadow-panel);
+}
+body.workspace-ui #tree .tree-item {
+  background: transparent !important;
+  border-radius: var(--r-sm);
+  color: var(--fg);
+}
+body.workspace-ui #tree .tree-item:hover { background: var(--hover-bg) !important; }
+body.workspace-ui #tree .tree-item.cur,
+body.workspace-ui #tree .tree-item.sel,
+body.workspace-ui .tree-item.on {
+  background: var(--selected-bg) !important;
+  color: var(--selected-ink) !important;
+  font-weight: 600;
+}
+body.workspace-ui .tree-head,
+body.workspace-ui .ft-head {
+  background: var(--panel-header) !important;
+  border-bottom: 1px solid var(--border) !important;
+  color: var(--muted) !important;
+  letter-spacing: .6px;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+body.workspace-ui .tree-foot,
+body.workspace-ui .ft-foot { border-top: 1px solid var(--border); color: var(--muted); }
+
+/* ── 控件 ── */
+body.workspace-ui input,
+body.workspace-ui select,
+body.workspace-ui textarea {
+  background: var(--control-fill) !important;
+  border: 1px solid var(--control-border) !important;
+  border-radius: var(--r-md);
+  color: var(--fg);
+  font-size: 13px;
+}
+body.workspace-ui input:focus,
+body.workspace-ui select:focus,
+body.workspace-ui textarea:focus {
+  outline: none;
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 2px rgba(191, 86, 52, .16);
+}
+body.workspace-ui button {
+  background: var(--control-fill);
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-md);
+  color: var(--fg);
+}
+body.workspace-ui button:hover { background: var(--hover-bg); }
+body.workspace-ui button.primary {
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+  color: #fffefb !important;
+}
+/* 开关型按钮（捕捉/平面这类 chip）不要实心强调色，否则整屏抢眼 */
+body.workspace-ui #navigationBar button.on,
+body.workspace-ui .infoChips button.on {
+  background: var(--selected-bg) !important;
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+  font-weight: 600;
+}
+body.workspace-ui button.primary:hover { background: #a94a2c !important; border-color: #a94a2c !important; }
+body.workspace-ui button.ghost {
+  background: transparent !important;
+  border-color: var(--border) !important;
+  color: var(--muted);
+}
+body.workspace-ui button.ghost:hover { background: var(--hover-bg) !important; color: var(--fg); }
+
+/* ── 时间线 / 设计历史 ── */
+body.workspace-ui .timeline-step {
+  background: var(--timeline-item) !important;
+  border: 1px solid var(--control-border) !important;
+  border-radius: var(--r-md) !important;
+  color: var(--fg);
+  transition: background .12s ease, border-color .12s ease;
+}
+body.workspace-ui .timeline-step:hover { background: var(--hover-bg) !important; }
+body.workspace-ui .timeline-step.sel,
+body.workspace-ui .timeline-step.on {
+  border-color: var(--accent) !important;
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+body.workspace-ui .timeline-step.suppressed,
+body.workspace-ui .timeline-step.sup { opacity: .5; border-style: dashed !important; }
+body.workspace-ui .timeline-step.error,
+body.workspace-ui .timeline-step.failed {
+  background: var(--timeline-error) !important;
+  border-color: var(--danger) !important;
+}
+body.workspace-ui .timeline-step.future { opacity: .55; }
+
+/* ── 命令面板 / 右键菜单 ── */
+body.workspace-ui .commandPalette,
+body.workspace-ui .contextMenu {
+  background: var(--panel) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--r-lg) !important;
+  box-shadow: var(--shadow-float);
+}
+body.workspace-ui .cp-head {
+  background: var(--panel-header) !important;
+  color: var(--muted) !important;
+  border-bottom: 1px solid var(--border) !important;
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+}
+body.workspace-ui .cp-item,
+body.workspace-ui .ctx-item { border-radius: var(--r-sm); color: var(--fg); }
+body.workspace-ui .cp-item:hover,
+body.workspace-ui .ctx-item:hover,
+body.workspace-ui .cp-item.sel { background: var(--selected-bg) !important; }
+body.workspace-ui .commandSearchWrap {
+  background: var(--control-fill) !important;
+  border: 1px solid var(--control-border) !important;
+  border-radius: var(--r-md);
+}
+body.workspace-ui .commandSearch { background: transparent !important; border: 0 !important; }
+body.workspace-ui .gestureHint { color: var(--muted) !important; font-size: 11.5px; }
+
+/* ── 开始界面 ── */
+body #startScreen { background: radial-gradient(90% 70% at 50% 0%, #f7f2e8, #ebe4d4); }
+body #startScreen .ss-logo { color: #2a251f; letter-spacing: -.5px; }
+body #startScreen .ss-sub { color: #675e50; }
+body #startScreen .ss-mode {
+  background: #fdfaf3;
+  border: 1px solid #dcd3c2;
+  border-radius: 13px;
+  color: #2a251f;
+  box-shadow: 0 2px 10px rgba(20, 17, 13, .07);
+}
+body #startScreen .ss-mode:hover { background: #f7f2e8; border-color: #bf5634; }
+body #startScreen .ss-ico { color: #bf5634; }
+body #startScreen .ss-desc { color: #675e50; }
+body #startScreen .ss-note { color: #956000; }
+
+/* ── 滚动条 ── */
+body.workspace-ui ::-webkit-scrollbar { width: 10px; height: 10px; }
+body.workspace-ui ::-webkit-scrollbar-track { background: transparent; }
+body.workspace-ui ::-webkit-scrollbar-thumb {
+  background: #cfc4af;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 6px;
+}
+body.workspace-ui ::-webkit-scrollbar-thumb:hover { background: #b7ab94; background-clip: padding-box; }
+
+/* ───────────── 旧深色容器归位（2026-11-04） ─────────────
+   start.css / style.css 里还留着旧深色主题的写死底色（#1b2028 / #0d0f12），
+   颜色用的是 var(--fg) → 深底配深字，看图模式那条工具条看起来就是“黑块+浅灰小字”。
+   这里统一收进 Clay：浅控件底 + 1px 边框 + 深色文字；强调态仍然是 accent。 */
+body.workspace-ui #viewbar {
+  background: var(--app-bar) !important;
+  border-bottom: 1px solid var(--border) !important;
+}
+body.workspace-ui :is(#viewbar, #sketchbar, #edgebar, #dimPanel, #featPanel, #picker, #extrude,
+  #numpad, #relPad, #smartPad, #movePad, #xformPad, #refgPad) :is(button, input, select) {
+  background: var(--control-fill) !important;
+  border: 1px solid var(--control-border) !important;
+  color: var(--fg) !important;
+  border-radius: var(--r-md) !important;
+}
+body.workspace-ui :is(#viewbar, #sketchbar, #edgebar, #dimPanel, #featPanel, #picker, #extrude,
+  #numpad, #relPad, #smartPad, #movePad, #xformPad, #refgPad) :is(button, input):hover {
+  background: var(--hover-bg) !important;
+}
+body.workspace-ui :is(#viewbar, #sketchbar, #edgebar) button.on,
+body.workspace-ui :is(#viewbar, #sketchbar, #edgebar) button.primary {
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+  color: #fffefb !important;
+}
+body.workspace-ui :is(#viewbar, #sketchbar, #edgebar, #dimPanel, #extrude) .tag {
+  background: var(--accent-soft) !important;
+  color: var(--accent) !important;
+  border: 1px solid #e2bda8 !important;
+  border-radius: var(--r-sm) !important;
+  font-weight: 600;
+}
+body.workspace-ui :is(#viewbar, #sketchbar, #edgebar, #dimPanel, #extrude) .muted { color: var(--muted) !important; }
