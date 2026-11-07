@@ -1,18 +1,18 @@
 {
   "name": "padcad",
-  "version": "1.0.0",
+  "version": "5.0.2",
   "description": "触摸优先的平板 CAD：OCCT(WASM) + three.js，直接建模、参数化重放、导出 STEP",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "test": "node scripts/test.mjs",
-    "build": "vite build",
+    "build": "vite build && node scripts/prune-wasm-dup.mjs",
     "preview": "vite preview --host 0.0.0.0",
     "postinstall": "node scripts/copy-wasm.mjs"
   },
   "keywords": ["cad", "opencascade", "occt", "wasm", "threejs", "tablet", "parametric", "step", "capacitor"],
   "author": "翻个的咸鱼",
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "repository": { "type": "git", "url": "git+https://github.com/timevisitor/padcad.git" },
   "homepage": "https://github.com/timevisitor/padcad",
   "dependencies": {

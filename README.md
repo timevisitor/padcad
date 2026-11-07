@@ -14,6 +14,15 @@ OpenCASCADE（经 [`replicad`](https://github.com/sgenoud/replicad) 封装），
 
 APK 打包走 Capacitor，在小米 Pad 7 Pro/Ultra 这类 12 寸平板上是真的能用的（本仓库就是它的源码）。
 
+## 下载 APK（安卓平板）
+
+**最新版：[PadCAD-5.0.2.apk](https://github.com/timevisitor/padcad/releases/latest/download/PadCAD-5.0.2.apk)**（约 10.9 MB）
+
+- 要求：Android 7.0+（`minSdk 24`），横屏使用；无反编译库，arm64/armv7/x86 通用
+- 安装：允许"安装未知来源应用"→ 直接装；首次进建模会加载 22MB 内核，约 1–3 秒
+- 签名：本仓库的发布包用 debug 证书签名（方便自用升级），**不适合上架应用商店**；要正式分发请自己生成 keystore 签
+- 校验：`sha256 = 34524a2fa3454238536f146579e46e3b3e26c42050a78e0d2a7f5f218100ddc7`
+
 ## 能做什么
 
 | 类别 | 能力 |
@@ -123,8 +132,14 @@ regression-*.mjs      212 项无头回归（node:test，真实几何断言）
 
 ## 许可
 
-本仓库代码以 **MIT** 发布。依赖与内嵌二进制的许可见 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)，
-其中几何内核 OpenCASCADE 是 **LGPL-2.1**（带例外条款），以 wasm 形式随应用分发。
+本仓库代码以 **AGPL-3.0-or-later** 发布：你可以自由使用、修改、分发，甚至商用；
+但**修改后的版本若通过网络提供服务或对外分发，必须同样以 AGPL 开源**（含完整源码）。
+这条是为了防止"改一版闭源拿去卖"。完整条款见 [LICENSE](LICENSE)。
+
+依赖与内嵌二进制的许可各自独立（OpenCASCADE 是 LGPL-2.1 + 例外），见
+[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)；分发打包产物时请一并带上该文件。
+
+> 如果你只是拿它建模、或把生成的 STEP/STL 拿去加工——不受任何限制，模型文件是你的。
 
 ## 致谢
 
