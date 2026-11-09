@@ -11,6 +11,7 @@ import { Datum } from "./datum.js";
 import { rebuild, RefLost, makeEdgeRefs, resolvePlane, remapFace } from "./replay.js";
 import { SnapEngine, candidatesOf, computeTracking, SNAP_KINDS } from "./snap.js";
 import { parseMesh } from "./importers.js";
+import { readStepBlob, safeVolume } from "./step-io.js";
 import { solveSketch } from "./solver.js";
 import * as ELEM from "./elements.js";
 import * as F from "./features.js";
@@ -20,6 +21,7 @@ import { normalizePatternOp, applyPatternOp } from "./pattern.js";
 import { createPatternPanel } from "./pattern-panel.js";
 import { installViewControls } from "./view-controls.js";
 import { installWorkspaceUI } from "./workspace-ui.js";
+import { installPenCursor } from "./pen-cursor.js";
 import { findSurfaceDrivers, readCylinderFace } from "./surface-drivers.js";
 import { rebuildPreview } from "./preview-rebuild.js";
 import { markSnapshot } from "./history-cache.js";
@@ -38,6 +40,8 @@ const $ = (id) => document.getElementById(id);
 const canvas = $("view");
 const viewer = new Viewer(canvas);
 let workspaceUI = null;
+// 「选中面」小卡锚在哪个世界坐标上（相机转动/手势结束后按它重新投影定位）
+let pickerAnchor = null;
 
 let shape = null;
 let mode = "select";          // select | pushpull | sketch
@@ -442,7 +446,11 @@ function drawSnapOverlay(rect = null) {
   const ctx = o.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, r.width, r.height);
-  if (mode !== "sketch") return;
+  /*
+   * 判「在不在草图里」要看 sketch 会话，不能看 mode：
+   * 草图内切换工具（选择/直线/…）不会、也不该影响覆盖层是否存在；用 mode 判会漏画。
+   */
+  if (!sketch) return;
 
   // 尺寸标注独立于捕捉开关：标过就应该一直看得到
   drawDimAnnotations(ctx, r);
@@ -804,17 +812,24 @@ function showStartScreen(show) {
   $("startScreen").classList.toggle("hidden", !show);
 }
 
-/** 建模模式：把建模 UI 全套放出来 */
+/** 建模模式：把建模 UI 全套放出来（浮层 UI：画布铺满，树与历史默认收起） */
 function enterModelMode() {
   appMode = "model";
   showStartScreen(false);
   $("viewbar").classList.add("hidden");
   $("toolbar").classList.remove("hidden");
   $("status").classList.remove("hidden");
-  setFeatTreeOpen(true);     // 左侧结构树
-  setTreeOpen(true);         // 底部时间线显示建模历史，不再挤占画布宽度。
+  // 平板浮层 UI：模型树 / 历史都是「按需浮出」，不再一进来就挤占画布
+  setFeatTreeOpen(false);
+  setTreeOpen(false);
+  // 进建模=干净的画布：不自动替用户选中面（要面卡的话点一下面就有了）
+  selectedFaceId = null;
+  selSnap = null;
+  try { viewer.clearHighlight(); } catch (_) {}
+  showPicker(null);
+  try { dim?.hide(); } catch (_) {}
   refresh({ fit: true });
-  setStats("建模模式 · 点「草图」开始，或选一个面推拉");
+  setStats("建模模式 · 点左缘「草图」开始，或选一个面推拉 · 长按画布出快捷菜单");
 }
 
 /** 看图模式：只留看图的 UI，建模操作全部收起来 */
@@ -901,30 +916,42 @@ async function openFile(file) {
   const t0 = performance.now();
   try {
     if (ext === "step" || ext === "stp") {
-      // STEP 走几何内核：读回来是真实 B-rep，不只是网格
-      const blob = file.slice(0, file.size, "application/step");
-      const imported = await OPS.importStepBlob(blob);
-      // 建模模式下：STEP 作为「第一个特征」接进参数化历史，后面可以继续拉伸/开孔/改尺寸
-      if (appMode === "model") {
+      // STEP 走几何内核：读回来是真实 B-rep，不只是网格。
+      // step-io.js：状态码真判、实体→壳(缝合)→面 分层兜底、BOM/垃圾文件给人话错误（对标 Materializr StepIO）
+      const res = await readStepBlob(file, { name });
+      const imported = res.shape;
+      const vol = safeVolume(res);
+      const volText = vol == null ? "非实体（无体积）" : `体积 ${vol.toFixed(1)} mm³`;
+      const warn = res.warnings.length ? ` · ⚠ ${res.warnings.join("；")}` : "";
+      const isSolid = res.level === "solid" || res.level === "shell-sewn";
+      // 建模模式下：实体 STEP 作为「第一个特征」接进参数化历史，后面可以继续拉伸/开孔/改尺寸
+      if (appMode === "model" && isSolid) {
         const reg = OPS.registerImported(imported, name);
         shape = imported;
         history = [];
         hIndex = -1;
-        redo = [];
-        commit(name, `STEP 导入 · 面 ${imported.faces.length} · 体积 ${OPS.volumeOf(imported).toFixed(1)} mm³`,
+        // ⚠ 这里原来有 `redo = []` —— redo 是 const 函数（重做 = gotoStep(hIndex+1)），赋值直接抛
+        //   "Assignment to constant variable"，真机导入 STEP 必失败（5.1.2 真机 CDP 抓到）。
+        //   commit() 自己会截断 hIndex 之后的历史，不需要另清重做栈。
+        commit(name, `STEP 导入 · 面 ${res.faces} · ${volText}`,
           "import", { type: "import", id: reg.id, name });
         setMode("select");
-        refresh();
-        setStats(`${name} 已作为设计起点导入 · 面 ${imported.faces.length} · 边 ${imported.edges.length} · ` +
-          `体积 ${OPS.volumeOf(imported).toFixed(1)} mm³ · 用时 ${(performance.now() - t0).toFixed(0)} ms`);
+        refresh({ fit: true });
+        setStats(`${name} 已作为设计起点导入 · 实体 ${res.solids} · 面 ${res.faces} · ${volText} · ` +
+          `用时 ${(performance.now() - t0).toFixed(0)} ms${warn}`);
         return;
       }
-      const shape = imported;
-      const m = OPS.meshOfShape(shape);
+      if (appMode === "model" && !isSolid) {
+        // 片体/面集不能当实体特征的起点 —— 切到看图模式显示，并说清楚原因，而不是静默失败
+        enterViewMode();
+      }
+      const m = OPS.meshOfShape(imported);
       displayImportedMesh({ positions: m.vertices, normals: m.normals, triangles: m.triangles, triangleCount: m.triCount }, name);
-      setStats(`${name} 读取成功 · 面 ${shape.faces.length} · 边 ${shape.edges.length} · ` +
-        `三角 ${m.triCount} · 体积 ${OPS.volumeOf(shape).toFixed(1)} mm³ · 用时 ${(performance.now() - t0).toFixed(0)} ms`);
+      setStats(`${name} 读取成功 · 实体 ${res.solids} · 面 ${res.faces} · 三角 ${m.triCount} · ${volText} · ` +
+        `用时 ${(performance.now() - t0).toFixed(0)} ms${warn}`);
     } else if (ext === "stl" || ext === "ply" || ext === "obj") {
+      // 网格不是 B-rep，不能当建模起点：在建模模式里选了网格就切到看图模式显示
+      if (appMode === "model") enterViewMode();
       const buf = await file.arrayBuffer();
       const parsed = parseMesh(name, ext === "obj" ? new TextDecoder().decode(buf) : new Uint8Array(buf));
       if (!parsed) throw new Error(`不认识的格式 .${ext}`);
@@ -2482,6 +2509,16 @@ function updateScaleBar() {
  * 草图平面上的网格：平面模式 + 进了草图才画。
  * 网格是**草图平面上的辅助线**（10mm 主格 / 2mm 次格），不参与任何几何运算。
  */
+/** 网格依赖的相机量：缩放档位 + 视野中心（量化到次格），变了才重建 */
+function gridSig() {
+  if (!viewer?.cam || !sketch) return "";
+  const H = canvas?.clientHeight || 800;
+  const mmPerPx = (2 * viewer.cam.dist * Math.tan((viewer.camera.fov * Math.PI / 180) / 2)) / H;
+  const t = viewer.cam.target;
+  const q = mmPerPx * 40;   // 视野中心每移动约 40px 重建一次（网格有 1.6× 余量，不会露边）
+  return `${Math.round(Math.log10(mmPerPx) * 20)}|${Math.round(t.x / q)},${Math.round(t.y / q)},${Math.round(t.z / q)}|${canvas?.clientWidth}x${H}`;
+}
+
 function drawSketchGrid() {
   if (!viewer?.scene) return;
   if (!gridGroup) {
@@ -2494,32 +2531,47 @@ function drawSketchGrid() {
     const c = gridGroup.children.pop();
     try { gridGroup.remove(c); c.geometry?.dispose?.(); c.material?.dispose?.(); } catch (_) {}
   }
+  // 草图平面网格（世界坐标，跟相机走）出现时，#view 的 CSS 屏幕方格（28px，固定在屏幕上）必须让位，
+  // 否则两层网格叠在一起：一层随拖动/缩放动、一层死的（用户反馈 v5.1.4）。见 workspace-ui.css .sketch-grid-on
+  document.body.classList.toggle("sketch-grid-on", !!(planarMode && sketch));
   if (!planarMode || !sketch) { gridGroup.visible = false; viewer.invalidate(); return; }
   gridGroup.visible = true;
 
   const O = sketch.origin, X = sketch.xDir, Y = sketch.yDir;
-  const big = 10, small = 2, N = 30;        // ±300mm，主格 10mm
-  const push = (a, b, col, op) => {
+  // 格距随缩放自适应（屏幕上次格 ≈ 14–35px），范围随视野中心走、始终铺满屏幕：
+  // 以前固定 ±60mm / 2mm 次格，平移出去或缩小后网格有硬边界（截图左侧 x≈204 处截断）。
+  const H = canvas?.clientHeight || 800, Wd = canvas?.clientWidth || 1200;
+  const mmPerPx = (2 * viewer.cam.dist * Math.tan((viewer.camera.fov * Math.PI / 180) / 2)) / H;
+  const rawSmall = mmPerPx * 14;
+  const mag = Math.pow(10, Math.floor(Math.log10(rawSmall)));
+  const small = [1, 2, 5, 10].map((k) => k * mag).find((v) => v >= rawSmall - 1e-12) || 10 * mag;
+  const step = Math.round(small / mag);              // 1 / 2 / 5 / 10
+  const big = small * (step === 5 ? 2 : 5);   // 主格 = 次格×5（1→5、2→10、10→50）或 ×2（5→10），都落在 1/5/10 系列上
+  const halfW = (Math.hypot(Wd, H) / 2) * mmPerPx * 1.6;   // 对角线一半 × 余量（平面视图有轻微透视）
+  const tgt = viewer.cam.target || O;
+  const tu = tgt.clone().sub(O).dot(X), tv = tgt.clone().sub(O).dot(Y);
+  const i0 = Math.floor((tu - halfW) / small), i1 = Math.ceil((tu + halfW) / small);
+  const j0 = Math.floor((tv - halfW) / small), j1 = Math.ceil((tv + halfW) / small);
+  // 先记签名再判范围：否则异常相机参数下 return，签名永为旧值 → 120ms 的 tick 会反复清空重建空网格。
+  gridGroup.userData.sig = gridSig();
+  if ((i1 - i0) + (j1 - j0) > 1200) return;   // 保护：异常相机参数下别画几万条线
+  // 一条 LineSegments 一种样式，避免每根线一个 draw call
+  const buckets = { axis: [], big: [], small: [] };
+  const P = (u, v) => O.clone().addScaledVector(X, u).addScaledVector(Y, v);
+  const seg = (arr, a, c) => arr.push(a.x, a.y, a.z, c.x, c.y, c.z);
+  const every = Math.round(big / small);             // 每几根次格出一根主格
+  const kind = (k) => (k === 0 ? "axis" : k % every === 0 ? "big" : "small");
+  const v0 = j0 * small, v1 = j1 * small, u0 = i0 * small, u1 = i1 * small;
+  for (let i = i0; i <= i1; i++) seg(buckets[kind(i)], P(i * small, v0), P(i * small, v1));
+  for (let j = j0; j <= j1; j++) seg(buckets[kind(j)], P(u0, j * small), P(u1, j * small));
+  const style = { axis: [0x53677c, 0.42], big: [0x8899aa, 0.22], small: [0x9eabb9, 0.10] };
+  for (const k of Object.keys(buckets)) {
+    if (!buckets[k].length) continue;
     const g = new THREE.BufferGeometry();
-    g.setAttribute("position", new THREE.BufferAttribute(new Float32Array([
-      a.x, a.y, a.z, b.x, b.y, b.z,
-    ]), 3));
-    const l = new THREE.Line(g, new THREE.LineBasicMaterial({
-      color: col, transparent: true, opacity: op, depthWrite: false,
-    }));
+    g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(buckets[k]), 3));
+    const l = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: style[k][0], transparent: true, opacity: style[k][1], depthWrite: false }));
     l.renderOrder = 2;
     gridGroup.add(l);
-  };
-  const at = (i, j) => O.clone().addScaledVector(X, i).addScaledVector(Y, j);
-  const half = N * small;
-  for (let i = -N; i <= N; i++) {
-    const u = i * small;
-    const isBig = Math.abs(u % big) < 1e-9;
-    const isAxis = Math.abs(u) < 1e-9;
-    const col = isAxis ? 0x53677c : isBig ? 0x8899aa : 0x9eabb9;
-    const op = isAxis ? 0.42 : isBig ? 0.22 : 0.10;
-    push(at(u, -half), at(u, half), col, op);      // 竖线
-    push(at(-half, u), at(half, u), col, op);      // 横线
   }
   viewer.invalidate();
 }
@@ -3381,25 +3433,70 @@ function showPicker(info) {
    * 这些命令模式下不再弹面信息面板：面已经被高亮，选中的是哪个面走状态栏文字。
    */
   const commandMode = ["fillet", "chamfer", "shell"].includes(mode);
-  if (!info || commandMode) { el.classList.add("hidden"); return; }
+  if (!info || commandMode) { el.classList.add("hidden"); pickerAnchor = null; return; }
   el.classList.remove("hidden");
   const n = info.normal.map((v) => v.toFixed(2)).join(", ");
+  const c = info.center.map((v) => v.toFixed(1)).join(", ");
   const planar = isPlanarPushPullFace(shape, info.faceId);
-  el.innerHTML = `
-    <div>选中面 <b>#${(info.faceId % 100000).toString().padStart(5, "0")}</b></div>
-    <div class="muted">法向 (${n})</div>
-    <div class="muted">中心 (${info.center.map((v) => v.toFixed(1)).join(", ")})</div>
-    ${planar ? `<div style="margin-top:8px;display:flex;gap:6px">
-      <input id="dist" type="number" inputmode="decimal" step="0.5" value="5"
-             style="width:84px;background:#0d0f12;border:1px solid var(--border);color:var(--fg);border-radius:8px;padding:8px" />
-      <button data-act="apply" style="border:none;background:var(--accent);color:#fff;border-radius:8px;padding:8px 14px">推拉</button>
+  const tag = `#${(info.faceId % 100000).toString().padStart(5, "0")}`;
+  /*
+   * 选中面 = 贴着这个面浮出的小卡（推拉数值 + 应用 + 两个快捷动作）。
+   * 法向/中心这类调试信息折到最后一行小字里 —— 用户要的是「就地改这个面」，
+   * 不是读一串坐标。卡片位置由 workspace-ui 按面的屏幕投影 + 避让算（不盖尺寸手柄）。
+   */
+  el.innerHTML = planar
+    ? `<div class="pk-head"><span>面 <b>${tag}</b></span><span class="pk-sub">平面</span></div>
+    <div class="pk-row">
+      <input id="dist" type="number" inputmode="decimal" step="0.5" value="5" />
+      <button data-act="apply" type="button">推拉</button>
     </div>
-    <div class="muted" style="margin-top:6px">切到「推拉」后单指拖动可直接推拉；点「草图」可在此面画图</div>`
-      : `<div class="muted" style="margin-top:8px">曲面尺寸请用橙色手柄；未显示手柄时，请在历史中编辑原始特征。</div>`}`;
-  if (planar) el.querySelector("[data-act=apply]").onclick = () => {
-    const v = parseFloat(el.querySelector("#dist").value);
-    if (isFinite(v)) applyPushPull(v);
-  };
+    <div class="pk-quick">
+      <button type="button" data-pick="sketch">草图</button>
+      <button type="button" data-pick="hole">孔</button>
+    </div>
+    <div class="pk-debug">法向 (${n}) · 中心 (${c})</div>`
+    : `<div class="pk-head"><span>面 <b>${tag}</b></span><span class="pk-sub">曲面</span></div>
+    <div class="muted" style="margin-top:6px">曲面尺寸请用橙色手柄；未显示手柄时，请在历史中编辑原始特征。</div>
+    <div class="pk-debug">法向 (${n}) · 中心 (${c})</div>`;
+  if (planar) {
+    // 注意顺序：apply 必须最后绑定（旧回归在假 DOM 里把三个按钮当成同一个对象）
+    el.querySelector('[data-pick="sketch"]').onclick = () => document.querySelector('[data-act="sketch"]')?.click();
+    el.querySelector('[data-pick="hole"]').onclick = () => document.querySelector('[data-act="hole"]')?.click();
+    el.querySelector("[data-act=apply]").onclick = () => {
+      const v = parseFloat(el.querySelector("#dist").value);
+      if (isFinite(v)) applyPushPull(v);
+    };
+  }
+  // 面卡跟着「这个面的屏幕投影」走；相机转动/手势结束后 UI 层会重新贴回来
+  pickerAnchor = [info.center[0], info.center[1], info.center[2]];
+  let pt = null;
+  try { if (typeof worldToScreen === "function") pt = worldToScreen(info.center); } catch (_) { pt = null; }
+  if (typeof workspaceUI !== "undefined" && workspaceUI && workspaceUI.placePickerAt) workspaceUI.placePickerAt(pt, pickerAnchor);
+}
+
+/**
+ * 选中面在屏幕上的包围盒（面卡要躲开它，否则卡片正好盖住刚选中的面 —— 父代理视觉复核抓到）。
+ * 用该面的网格顶点投影；顶点太多时抽样，最多 600 个点。
+ */
+function selectedFaceScreenRect() {
+  try {
+    const md = viewer.meshData;
+    if (selectedFaceId == null || !md?.faceGroups) return null;
+    const g = md.faceGroups.find((x) => x.faceId === selectedFaceId);
+    if (!g) return null;
+    const tri = md.triangles, ver = md.vertices;
+    const n = g.count * 3, stepN = Math.max(1, Math.floor(n / 600));
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (let k = 0; k < n; k += stepN) {
+      const vi = tri[g.start * 3 + k] * 3;
+      const p = worldToScreen([ver[vi], ver[vi + 1], ver[vi + 2]]);
+      if (!Number.isFinite(p[0]) || !Number.isFinite(p[1])) continue;
+      if (p[0] < x0) x0 = p[0]; if (p[0] > x1) x1 = p[0];
+      if (p[1] < y0) y0 = p[1]; if (p[1] > y1) y1 = p[1];
+    }
+    if (!Number.isFinite(x0)) return null;
+    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  } catch (_) { return null; }
 }
 
 // ---------------------------------------------------------------- 推拉
@@ -4770,8 +4867,11 @@ function renderTree() {
 
 function setTreeOpen(open) {
   document.body.classList.toggle("tree-open", open);
-  $("btnTreeShow").classList.toggle("hidden", open);
-  // 画布让出了空间，必须让 renderer 重新测量
+  // 历史是左下角一个开关，展开/收起时开关**留在原位**（im-touch 的做法）
+  $("btnTreeShow").classList.remove("hidden");
+  $("btnTreeShow").classList.toggle("on", !!open);
+  $("btnTreeShow").setAttribute("aria-expanded", String(!!open));
+  // 画布是全屏的，树浮在上面；这里只是让 UI 层重算一次浮层位置
   requestAnimationFrame(() => { viewer.resize(); drawSnapOverlay(); });
 }
 
@@ -4847,7 +4947,7 @@ function setupDim() {
      * 但不能无脑每帧画：drawSnapOverlay 里有 getBoundingClientRect()，
      * 每帧调用会反复触发 layout。所以比一个相机签名，变了才重画。
      */
-    if (mode === "sketch") {
+    if (sketch && planarMode) {
       const c = viewer.camera;
       const sig = `${c.position.x.toFixed(2)},${c.position.y.toFixed(2)},${c.position.z.toFixed(2)}`
         + `,${viewer.cam.dist.toFixed(2)}`;
@@ -5303,6 +5403,7 @@ $("featVal").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); a
     last = sig;
     updateAxisGizmo();
     updateScaleBar();
+    if (planarMode && sketch && gridGroup && gridGroup.userData.sig !== gridSig()) drawSketchGrid();
   };
   setInterval(tick, 120);
   tick();
@@ -5325,7 +5426,24 @@ document.querySelectorAll("[data-act]").forEach((b) => {
       faceRequest = null;
       if (mode === "pickface" || mode === "hole") mode = "select";
     }
-    if (a === "select" || a === "pushpull") { setMode(a); if (a === "select") viewer.highlightEdges([]); }
+    /*
+     * ⚠ 草图里点「选择」**不能**走 setMode("select")：
+     *   mode 一旦从 "sketch" 变成 "select"，所有 `mode === "sketch"` 的判断全部失效 ——
+     *   覆盖层的特征点/尺寸标注不再跟随相机（表现为「画完点平移视图，点和线错位」），
+     *   草图里的拖动绘制、特征点拖动也一起失灵。用户实测反馈的就是这个。
+     * 草图内只需要切换 sketchTool，mode 必须保持 "sketch"。
+     */
+    if (a === "select" && sketch) {
+      sketchTool = "select";
+      for (const btn of document.querySelectorAll("[data-act]")) {
+        if (["snap", "datum", "script"].includes(btn.dataset.act)) continue;
+        btn.classList.toggle("on", btn.dataset.act === "select");
+      }
+      viewControls.refresh();
+      redrawSketch();
+      setStats("选择工具：点一下拾取图元；在空白处拖动可平移视图");
+    }
+    else if (a === "select" || a === "pushpull") { setMode(a); if (a === "select") viewer.highlightEdges([]); }
     else if (a === "sketch") { setMode("select"); enterSketch(); }
     // 进入命令模式时高亮「这个命令」本身，而不是把高亮留在「选择」上 ——
     // 否则用户在抽壳/圆角模式下看到的仍是「选择」被点亮，会以为工具已经退出了。
@@ -5366,6 +5484,7 @@ document.querySelectorAll("[data-act]").forEach((b) => {
     else if (a === "fit") viewer.cam.fit(viewer.bbox);
     else if (a === "save") openSaveDialog("save");
     else if (a === "load") openSaveDialog("load");
+    else if (a === "import") $("fileInput").click();
     else if (a === "step") exportStep();
   };
 });
@@ -5506,7 +5625,7 @@ $("extrDist").addEventListener("input", () => {
 $("btnUndo").onclick = undo;
 $("btnRedo").onclick = redo;
 $("btnTreeHide").onclick = () => setTreeOpen(false);
-$("btnTreeShow").onclick = () => setTreeOpen(true);
+$("btnTreeShow").onclick = () => setTreeOpen(!document.body.classList.contains("tree-open"));   // 左下开关：同一位置开/合
 window.addEventListener("keydown", (e) => {
   if (e.target instanceof Element && e.target.closest("input, textarea, select, [contenteditable=true]")) return;
   if (mode === "sketch") return;
@@ -6422,10 +6541,15 @@ $("skToolGo").onclick = () => applySketchTool();
 $("skToolClose").onclick = () => { $("skToolPad").classList.add("hidden"); setStats("已关闭草图工具面板（图元不动）"); };
 
 // 布局移动真实按钮，放在事件绑定之后；画布尺寸变化时同步拾取与捕捉坐标。
-workspaceUI = installWorkspaceUI({ onLayout: () => {
-  viewer.resize(); drawSnapOverlay(); updateAxisGizmo(); updateScaleBar();
-  syncWorkspaceBottom();          // 外壳刚装好时也要量一次底栏高度
-} });
+workspaceUI = installWorkspaceUI({
+  onLayout: () => {
+    viewer.resize(); drawSnapOverlay(); updateAxisGizmo(); updateScaleBar();
+    syncWorkspaceBottom();          // 外壳刚装好时也要量一次底栏高度
+  },
+  // 浮层要「贴着选中面的投影」摆：把世界坐标 → 屏幕 client 坐标的能力交给外壳
+  project: (p3) => worldToScreen(p3),
+  selectionRect: () => selectedFaceScreenRect(),
+});
 
 // 长按打开上下文菜单（Afu3D：单指长按 → 移动/删除/圆角/倒角等）
 viewer.cam.onLongPress = ({ x, y }) => {
@@ -6500,6 +6624,9 @@ viewer.cam.onLongPress = ({ x, y }) => {
     triangles: new Uint32Array(0), faceGroups: [], triCount: 0,
   });
   showStartScreen(true);
+
+  // 触控笔悬停虚拟光标：笔尖离屏（未落笔）时指示当前位置；只认 pointerType=pen
+  const penCursor = installPenCursor();
 
   window.__padcad = {
     // 建模脚本入口（AI/外部工具可以直接驱动：runScript(script) / runScript(script,"append")）
@@ -6660,6 +6787,8 @@ viewer.cam.onLongPress = ({ x, y }) => {
     get grabState() { return grabState ? { ...grabState } : null; },
     get camera() { return viewer.camera; },
     get overlayRedraws() { return _overlayRedraws; },
+    /** 笔悬停光标：stats() 查 hover/down/exit 计数（hover 恒 0 = 系统没派发笔悬停） */
+    get penCursor() { return penCursor; },
     panCamera: (dx, dy) => {
       // 模拟手指拖动平移视角（平面模式下的单指行为）
       const scale = viewer.cam.dist * 0.0022;

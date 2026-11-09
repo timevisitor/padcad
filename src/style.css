@@ -61,6 +61,34 @@ body.tree-open #view { width: calc(100% - var(--treew)); }
   pointer-events: none; z-index: 15;
 }
 
+/* ---------- 触控笔悬停光标 ---------- */
+/* 只在笔悬停（pointerType=pen 且未落笔）时出现；pointer-events:none 绝不参与命中测试。
+   尺寸 34px 必须与 pen-cursor.js 的 SIZE 常量一致，margin 让笔尖落在元件中心。 */
+#penCursor {
+  position: fixed; left: 0; top: 0;
+  width: 34px; height: 34px;
+  margin: -17px 0 0 -17px;
+  pointer-events: none;
+  z-index: 200;
+  color: var(--accent, #bf5634);
+  opacity: 0;
+  transition: opacity .1s linear;
+  will-change: transform, opacity;
+}
+#penCursor.on { opacity: .92; }
+#penCursor svg { display: block; overflow: visible; }
+/* 白色描边阴影：深色模型/阴影面上也能看清（浅色背景下不抢眼） */
+#penCursor .penCursorRing,
+#penCursor .penCursorCross {
+  fill: none; stroke: currentColor;
+  stroke-width: 1.25; stroke-linecap: round;
+  filter: drop-shadow(0 0 1.5px rgba(255, 255, 255, .95));
+}
+#penCursor .penCursorDot {
+  fill: currentColor;
+  filter: drop-shadow(0 0 1.5px rgba(255, 255, 255, .95));
+}
+
 /* ---------- 特征树 ---------- */
 #tree {
   position: fixed; top: 0; right: 0; bottom: 0;

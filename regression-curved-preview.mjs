@@ -280,5 +280,4 @@ test("invalid starter hole dimensions reject rebuilding while old definitions ke
 });
 
 // Keep a reproducible document for independent browser validation; no user document is modified.
-fs.mkdirSync("out", { recursive: true });
 fs.writeFileSync("out/surface-driver-example.padcad.json", JSON.stringify(projectDefinition("圆孔与双柱手柄验证", threeCircleHistory(), 2), null, 2));

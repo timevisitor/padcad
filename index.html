@@ -52,9 +52,12 @@
     <button data-vact="edges">显示棱边</button>
     <button data-vact="back">返回</button>
   </div>
-  <!-- 文件选择（accept 只是给系统选择器一个提示，真正的格式判断在代码里） -->
-  <input type="file" id="fileInput" style="display:none"
-         accept=".step,.stp,.stl,.ply,.obj,.STEP,.STP,.STL,.PLY,.OBJ" />
+  <!-- 文件选择：故意不写 accept。
+       安卓 WebView(Capacitor) 会把 ".step" 经 MimeTypeMap 换成 MIME —— step/stp 查不到 MIME 被丢掉，
+       剩下 stl/obj 的 MIME 当 EXTRA_MIME_TYPES 传给系统选择器，结果 HyperOS「安全访问」选择器里
+       .STEP 文件根本不显示（2026-11-08 真机实测：Download 里放了 2 个 STEP，选择器显示 0 个文件）。
+       真正的格式判断在 openFile() 里按扩展名 + 文件头做。 -->
+  <input type="file" id="fileInput" style="display:none" />
 
   <!-- 左上：状态 -->
   <div id="status" class="panel">    <div class="row"><span class="dot" id="kdot"></span><span id="ktext">内核加载中…</span></div>
@@ -82,6 +85,7 @@
     <button data-act="fit">适配</button>
     <button data-act="save">保存</button>
     <button data-act="load">打开</button>
+    <button data-act="import">导入STEP</button>
     <button data-act="step">导出STEP</button>
     <!-- 网格导出：加工沟通要 STL、3D 打印要 3MF、切片/交换要 OBJ（A 批 exporters.js 已有实现，只是没有入口） -->
     <button data-act="stl">导出STL</button>

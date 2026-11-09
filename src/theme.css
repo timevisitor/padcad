@@ -343,3 +343,150 @@ body.workspace-ui :is(#viewbar, #sketchbar, #edgebar, #dimPanel, #extrude) .tag 
   font-weight: 600;
 }
 body.workspace-ui :is(#viewbar, #sketchbar, #edgebar, #dimPanel, #extrude) .muted { color: var(--muted) !important; }
+
+
+/* ───────────── 浮动外壳层（2026-11-08 平板 UI 改版：画布全屏 + 浮块） ─────────────
+   旧外壳的常驻顶栏 / 左右工具轨 / 底栏已经不存在了。这里把主题色改挂到新的浮块上，
+   并压住上面那些 !important（主题层必须是最终裁决者）。 */
+body.workspace-ui #workspaceHeader {
+  background: none !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+}
+body.workspace-ui .shell-chip,
+body.workspace-ui .shell-pill,
+body.workspace-ui #toolDock,
+body.workspace-ui #navigationBar,
+body.workspace-ui #btnTreeShow,
+body.workspace-ui #dockHandle {
+  background: rgba(253, 250, 243, .93) !important;
+  border: 1px solid var(--control-border) !important;
+  box-shadow: var(--shadow-panel) !important;
+  color: var(--fg);
+}
+body.workspace-ui .shell-chip,
+body.workspace-ui .shell-pill { border-radius: 25px !important; }
+body.workspace-ui #toolDock { border-radius: 18px !important; }
+body.workspace-ui #navigationBar { border-radius: 26px !important; }
+body.workspace-ui #navigationBar button {
+  background: transparent !important;
+  border-color: transparent !important;
+}
+body.workspace-ui #navigationBar button:hover { background: var(--hover-bg) !important; }
+body.workspace-ui #navigationBar button.on,
+body.workspace-ui #modeToggle.planar {
+  background: var(--selected-bg) !important;
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+}
+body.workspace-ui .dock-btn,
+body.workspace-ui .pill-btn,
+body.workspace-ui .chip-btn {
+  background: transparent !important;
+  border-color: transparent !important;
+}
+body.workspace-ui .dock-btn:hover,
+body.workspace-ui .pill-btn:hover,
+body.workspace-ui .chip-btn:hover { background: var(--hover-bg) !important; }
+body.workspace-ui .dock-btn.on,
+body.workspace-ui .dock-group-btn[aria-expanded="true"],
+body.workspace-ui .pill-btn[aria-pressed="true"],
+body.workspace-ui .chip-btn[aria-expanded="true"] {
+  background: var(--selected-bg) !important;
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+}
+body.workspace-ui #featTree {
+  background: rgba(244, 238, 227, .78) !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: var(--shadow-float) !important;
+}
+body.workspace-ui #tree {
+  background: rgba(244, 238, 227, .94) !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: var(--shadow-float) !important;
+}
+body.workspace-ui #tree .tree-head {
+  background: transparent !important;
+  border: 0 !important;
+  border-right: 1px solid var(--border) !important;
+  text-transform: none;
+  letter-spacing: .2px;
+  color: var(--muted) !important;
+}
+body.workspace-ui #tree .tree-head b { color: var(--fg); }
+body.workspace-ui #tree .tree-item { background: var(--control-fill) !important; }
+body.workspace-ui #tree .tree-item.cur { background: var(--selected-bg) !important; }
+body.workspace-ui .ft-head { background: rgba(242, 233, 219, .82) !important; }
+body.workspace-ui #picker,
+body.workspace-ui #commandPalette,
+body.workspace-ui .shell-menu,
+body.workspace-ui #status,
+body.workspace-ui #surfaceGroupPad.surface-flyout {
+  background: rgba(253, 250, 243, .97) !important;
+  border: 1px solid var(--control-border) !important;
+  box-shadow: var(--shadow-float) !important;
+}
+body.workspace-ui .radial-item {
+  background: rgba(253, 250, 243, .97) !important;
+  border: 1px solid var(--control-border) !important;
+}
+body.workspace-ui .radial-item:active,
+body.workspace-ui .radial-item:hover {
+  background: var(--selected-bg) !important;
+  border-color: var(--accent) !important;
+}
+body.workspace-ui #viewbar {
+  background: rgba(253, 250, 243, .93) !important;
+  border: 1px solid var(--control-border) !important;
+}
+body.workspace-ui #viewbar button {
+  background: transparent !important;
+  border-color: transparent !important;
+}
+body.workspace-ui #viewbar button.on {
+  background: var(--selected-bg) !important;
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+}
+body.workspace-ui .fab-done {
+  background: var(--accent) !important;
+  border-color: #fffefb !important;
+  color: #fffefb !important;
+}
+body.workspace-ui .fab-cancel {
+  background: var(--control-fill) !important;
+  border-color: var(--control-border) !important;
+  color: var(--danger) !important;
+}
+body.workspace-ui .cp-item,
+body.workspace-ui .gp-item,
+body.workspace-ui .dp-chip {
+  background: var(--control-fill) !important;
+  border: 1px solid var(--control-border) !important;
+  color: var(--fg) !important;
+}
+body.workspace-ui .sm-act,
+body.workspace-ui .sm-item {
+  background: transparent !important;
+  border-color: transparent !important;
+}
+body.workspace-ui .cp-item:hover,
+body.workspace-ui .gp-item:hover,
+body.workspace-ui .dp-chip:hover,
+body.workspace-ui .sm-act:hover,
+body.workspace-ui .sm-item:hover { background: var(--hover-bg) !important; }
+body.workspace-ui .gp-item.on,
+body.workspace-ui .dp-chip.on {
+  background: var(--selected-bg) !important;
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+}
+
+/* 模型树里的分组名/图标是旧深色主题留下的浅色字（#cfd8e6），浅底上几乎看不见 */
+body.workspace-ui .ft-node.grp .ft-nm { color: var(--fg) !important; font-weight: 650; }
+body.workspace-ui .ft-node .ft-nm { color: var(--fg); }
+body.workspace-ui .ft-node.dim .ft-nm { color: var(--muted); }
+body.workspace-ui .ft-node .ft-ico { background: rgba(221, 211, 194, .85) !important; color: var(--muted) !important; }
+body.workspace-ui .ft-node.sel { background: var(--selected-bg) !important; }

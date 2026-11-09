@@ -101,7 +101,6 @@ test("eleven-feature desktop benchmark records actual full vs incremental previe
     preview.dispose(); disposeRebuild(full);
   }
   const median = values => values.slice(1).sort((a, b) => a - b)[2];
-  fs.mkdirSync("out", { recursive: true });
   fs.writeFileSync("out/pad7-performance-benchmark.json", JSON.stringify({ environment: "Windows Node.js / OCCT WASM; not a Xiaomi device measurement",
     features: h.length, fullRebuildSteps: h.length, previewSteps: 1, fullMedianMs: median(fullMs), previewMedianMs: median(previewMs), fullMs, previewMs }, null, 2));
 });

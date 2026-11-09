@@ -16,15 +16,15 @@ APK 打包走 Capacitor，在小米 Pad 7 Pro/Ultra 这类 12 寸平板上是真
 
 ## 下载 APK（安卓平板）
 
-**最新版：[PadCAD-5.0.2.apk](https://github.com/timevisitor/padcad/releases/latest/download/PadCAD-5.0.2.apk)**（约 10.9 MB）
+**最新版：[PadCAD-5.1.7.apk](https://github.com/timevisitor/padcad/releases/latest/download/PadCAD-5.1.7.apk)**（约 10.9 MB）
 
 - 要求：Android 7.0+（`minSdk 24`），横屏使用；无反编译库，arm64/armv7/x86 通用
 - 安装：允许"安装未知来源应用"→ 直接装；首次进建模会加载 22MB 内核，约 1–3 秒
 - 签名：本仓库的发布包用 debug 证书签名（方便自用升级），**不适合上架应用商店**；要正式分发请自己生成 keystore 签
-- 校验：`sha256 = 34524a2fa3454238536f146579e46e3b3e26c42050a78e0d2a7f5f218100ddc7`
+- 校验：`sha256 = b7e4be978693843a8043419ba82764c2254cff3bee40f8055a8e3147d70834bf`
 
 > 国内直连 GitHub release 的下载可能很慢或中断，可以用镜像前缀：
-> `https://ghfast.top/` + 上面的下载地址（例：`https://ghfast.top/https://github.com/timevisitor/padcad/releases/latest/download/PadCAD-5.0.2.apk`）。
+> `https://ghfast.top/` + 上面的下载地址（例：`https://ghfast.top/https://github.com/timevisitor/padcad/releases/latest/download/PadCAD-5.1.7.apk`）。
 > 镜像只是加速，装之前仍建议核一下 sha256。
 
 ## 能做什么
@@ -39,6 +39,7 @@ APK 打包走 Capacitor，在小米 Pad 7 Pro/Ultra 这类 12 寸平板上是真
 | 检查 | 质量属性（体积/面积/质心/包围盒）、两面距离、干涉检查、任意高度截面 |
 | 参考几何 | 世界基准面与偏移基准面、参考轴/点/坐标系 |
 | 输入输出 | 导出 STEP / STL / OBJ / 3MF；看图模式导入 STEP / STL / PLY / OBJ；工程保存与打开 |
+| 平板交互 | 画布全屏浮层 UI、语境工具坞、长按径向菜单、选中面小卡跟随投影、触控笔悬停虚拟光标、单指/双指手势 |
 | 扩展 | 建模脚本通道（纯 JSON，逐步重放 + 每步几何断言），可被外部程序/AI 直接驱动 |
 
 ## 截图
@@ -60,7 +61,7 @@ git clone https://github.com/timevisitor/padcad.git
 cd padcad
 npm install          # postinstall 会把 22MB 的几何内核拷到 public/
 npm run dev          # http://localhost:5173
-npm test             # 212 项回归（真实 OCCT 计算，不依赖浏览器）
+npm test             # 226 项回归（真实 OCCT 计算，不依赖浏览器）
 npm run build        # 产出 dist/
 ```
 
@@ -89,13 +90,16 @@ src/replay.js         参数化重放：从起始零件重算历史链，每步�
 src/viewer.js         three.js 视口（Z-up，面高亮、拾取、预览线框）
 src/camera.js         触摸轨道相机（单指旋转/平面平移、双指缩放平移、长按菜单）
 src/sketch*.js        草图会话、图元、约束求解器、捕捉与追踪
+src/pen-cursor.js     触控笔悬停光标（笔尖离屏时的落点指示）
+src/float-layout.js   平板浮层布局的纯函数（径向菜单、面卡避让）
+src/step-io.js        STEP 读取与错误归类（导入链路的兜底）
 src/solid-features.js 分割 / 布尔 / 移动面 / 加厚
 src/surface.js        曲面四件套
 src/inspect.js        质量属性、距离、干涉、截面
 src/exporters.js      STEP / STL / OBJ / 3MF 导出
 src/importers.js      STEP / STL / PLY / OBJ 导入（看图模式）
 src/main.js           UI 组装与交互状态机（最大的一块，正在解耦）
-regression-*.mjs      212 项无头回归（node:test，真实几何断言）
+regression-*.mjs      226 项无头回归（node:test，真实几何断言）
 ```
 
 设计上的两个硬约定：
