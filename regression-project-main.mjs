@@ -7,6 +7,8 @@ import { setOC, measureVolume } from "replicad";
 import { rebuild, RefLost } from "./src/replay.js";
 import { solveSketch } from "./src/solver.js";
 import { cacheRebuild, withoutFeature } from "./src/project.js";
+import { replaceStep, appendStep, rebuildInto } from "./src/param-edit.js";
+import { sandboxCommands } from "./sandbox-command-stub.mjs";
 
 const source = fs.readFileSync("./src/main.js", "utf8");
 const noop = () => {};
@@ -25,8 +27,10 @@ function context(state = {}, functions = []) {
     renderTree:noop,renderFeatTree:noop,refresh:noop,closePatternEditor:noop,
     featureDisplayName:h=>h.label, EDITABLE:{extrude:{key:"depth",label:"深度",unit:"mm",step:1}}, FEAT_GROUP:{},
     cacheRebuild, withoutFeature, rebuild, solveSketch, RefLost,
+    replaceStep, appendStep, rebuildInto,
     ...state,
   });
+  c.docCommands = sandboxCommands(c);
   c.$ = id => {
     if (!elements.has(id)) elements.set(id,{value:"",textContent:"",classList:{add:noop,remove:noop}});
     return elements.get(id);
@@ -68,10 +72,11 @@ test("sketch edit commits contour selection and rolls back definitions on failur
     detailOf:()=>"edited",redrawSketch:noop,rebuildAndApply:()=>false},["commitSketchEdit"]);
   const original=h.op;
   vm.runInContext("commitSketchEdit(0)",c);
-  assert.equal(h.op,original);
+  // 失败：文档里的定义必须还是原来那个对象（行是不可变值，失败连数组都不换）
+  assert.equal(c.history[0].op,original);
   c.rebuildAndApply=()=>true;
   vm.runInContext("commitSketchEdit(0)",c);
-  assert.deepEqual(Array.from(h.op.selected),[0]);
+  assert.deepEqual(Array.from(c.history[0].op.selected),[0]);
 });
 test("planar controllers skip future and suppressed features; curves require a selected real face", () => {
   const h=[row(),{...row(),suppressed:true},row()];

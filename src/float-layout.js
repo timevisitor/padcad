@@ -76,21 +76,26 @@ export function radialLayout({ x, y, count, viewport, radius = 88, itemSize = 56
 }
 
 /**
- * 把一个浮卡放到锚点旁边，不越视口、不盖住 avoid 里的东西（尺寸手柄、顶部浮块…）。
+ * 把一个浮卡放到锚点旁边，不越视口、不盖住 avoid 里的东西（尺寸手柄、顶部浮块…）、
+ * 也不许**盖住锚点本身**（锚点＝手指刚落下的位置／被选中的那个面，
+ * 盖住它就等于把用户刚点的东西藏起来 —— 装配的配合菜单实测就是这样：菜单被夹到顶边后
+ * 整个压在第二个落点上，看着像"点了没反应"）。
  *
- * 打分 = 与锚点的距离 + 惩罚（越界面积 / 遮住别人面积）。
+ * 打分 = 与锚点的距离 + 惩罚（越界面积 / 遮住别人面积 / 盖住锚点）。
  * 所以只要存在「完全合规」的位置，一定选得到它；全都不合规时退回重叠最少的位置。
  *
  * @param {{anchor:{x:number,y:number}, size:{w:number,h:number},
  *          viewport:{w:number,h:number}, avoid?:{x:number,y:number,w:number,h:number}[],
- *          gap?:number, margin?:number}} o
- * @returns {{x:number,y:number,side:string,overlap:number,inside:boolean}}
+ *          avoidPoints?:{x:number,y:number}[], gap?:number, margin?:number}} o
+ *        avoidPoints 默认 [anchor]：这些点都不许落进卡片矩形里
+ * @returns {{x:number,y:number,side:string,overlap:number,inside:boolean,coversPoint:boolean}}
  */
-export function placeCard({ anchor, size, viewport, avoid = [], gap = 12, margin = 8 }) {
+export function placeCard({ anchor, size, viewport, avoid = [], avoidPoints = null, gap = 12, margin = 8 }) {
   const vp = viewport || { w: 360, h: 640 };
   const { w, h } = size;
   const ax = anchor.x;
   const ay = anchor.y;
+  const points = (avoidPoints || [{ x: ax, y: ay }]).filter((p) => p && isFinite(p.x) && isFinite(p.y));
   const candidates = [
     { side: "right", x: ax + gap, y: ay - h / 2 },
     { side: "left", x: ax - gap - w, y: ay - h / 2 },
@@ -113,12 +118,71 @@ export function placeCard({ anchor, size, viewport, avoid = [], gap = 12, margin
     };
     let overlap = 0;
     for (const a of avoid) if (a) overlap += overlapArea(box, a);
+    /*
+     * 盖住锚点/被选对象：这是"看不见自己刚点了什么"的直接原因，
+     * 惩罚必须比距离差大一个量级（1e6 ≫ 任何距离 + 面积项），
+     * 凡是存在不盖住锚点的候选就一律优先它。
+     */
+    let coversPoint = false;
+    for (const p of points) {
+      if (p.x > box.x && p.x < box.x + w && p.y > box.y && p.y < box.y + h) { coversPoint = true; break; }
+    }
     const dist = Math.hypot(box.x + w / 2 - ax, box.y + h / 2 - ay);
     // 重叠的惩罚必须远大于距离差：宁可放远一点，也不能盖住尺寸手柄
-    const score = dist + overlap * 0.6;
-    if (!best || score < best.score) best = { ...box, side: c.side, overlap, score, inside: insideBox(box, vp, margin) };
+    const score = dist + overlap * 0.6 + (coversPoint ? 1e6 : 0);
+    if (!best || score < best.score) best = { ...box, side: c.side, overlap, score, coversPoint, inside: insideBox(box, vp, margin) };
   }
-  return { x: best.x, y: best.y, side: best.side, overlap: best.overlap, inside: best.inside };
+  return { x: best.x, y: best.y, side: best.side, overlap: best.overlap, inside: best.inside, coversPoint: !!best.coversPoint };
+}
+
+/**
+ * 大浮层（配合菜单这类"又高又宽、旁边还有模型"的卡）的定位：**扫描式**选位。
+ *
+ * 为什么不能只靠 placeCard 的 8 个相对位置：那些候选全都贴着锚点，最多差 14px；
+ * 而被选中的面可能铺满锚点周围一两百像素（60×40 的板从下往上看，底面投影就是一大块），
+ * 8 个位置全压在面上，评分只能"选个压得少的" —— 实测 30259px² 压在第二个面上。
+ *
+ * 这里在视口里按 step 网格扫一遍，先排除"压到 avoid / 盖住锚点"的位置，
+ * 再在剩下的里面取离锚点最近的。有合规位置就一定选得到。
+ *
+ * @param {{anchor:{x:number,y:number}, size:{w:number,h:number}, viewport:{w:number,h:number},
+ *          avoid?:{x:number,y:number,w:number,h:number}[], avoidPoints?:{x:number,y:number}[],
+ *          margin?:number, step?:number}} o
+ * @returns {{x:number,y:number,side:string,overlap:number,inside:boolean,coversPoint:boolean,scanned:number}}
+ */
+export function placeCardScan({ anchor, size, viewport, avoid = [], avoidPoints = null, margin = 8, step = 16 }) {
+  const vp = viewport || { w: 360, h: 640 };
+  const { w, h } = size;
+  const ax = anchor.x, ay = anchor.y;
+  const points = (avoidPoints || [{ x: ax, y: ay }]).filter((p) => p && isFinite(p.x) && isFinite(p.y));
+  const maxX = Math.max(margin, vp.w - w - margin);
+  const maxY = Math.max(margin, vp.h - h - margin);
+  const x0 = Math.min(margin, maxX);
+  const y0 = Math.min(margin, maxY);
+  const xs = [];
+  for (let x = x0; x <= maxX + 0.5; x += step) xs.push(Math.round(x));
+  if (xs[xs.length - 1] !== maxX) xs.push(Math.round(maxX));
+  const ys = [];
+  for (let y = y0; y <= maxY + 0.5; y += step) ys.push(Math.round(y));
+  if (ys[ys.length - 1] !== maxY) ys.push(Math.round(maxY));
+
+  let best = null, scanned = 0;
+  for (const y of ys) {
+    for (const x of xs) {
+      const box = { x, y, w, h };
+      scanned++;
+      let overlap = 0;
+      for (const a of avoid) if (a) overlap += overlapArea(box, a);
+      let coversPoint = false;
+      for (const p of points) {
+        if (p.x > box.x && p.x < box.x + w && p.y > box.y && p.y < box.y + h) { coversPoint = true; break; }
+      }
+      const dist = Math.hypot(x + w / 2 - ax, y + h / 2 - ay);
+      const score = dist + overlap * 0.6 + (coversPoint ? 1e6 : 0);
+      if (!best || score < best.score) best = { ...box, overlap, score, coversPoint, inside: insideBox(box, vp, margin) };
+    }
+  }
+  return { x: best.x, y: best.y, side: "scan", overlap: best.overlap, inside: best.inside, coversPoint: !!best.coversPoint, scanned };
 }
 
 /**

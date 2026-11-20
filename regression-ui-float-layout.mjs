@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { radialLayout, placeCard, dockMetrics, overlapArea, clamp } from "./src/float-layout.js";
+import { radialLayout, placeCard, placeCardScan, dockMetrics, overlapArea, clamp } from "./src/float-layout.js";
 
 const PAD = { w: 1163, h: 776 };   // 小米 Pad 7 横屏的 CSS 视口
 
@@ -116,6 +116,38 @@ test("浮卡：视口比卡片还小时退回夹取，不抛错", () => {
   const p = placeCard({ anchor: { x: 10, y: 10 }, size: { w: 236, h: 150 }, viewport: { w: 200, h: 120 } });
   assert.equal(p.x, 8);
   assert.equal(p.y, 8);
+});
+
+test("浮卡：宁可离远一点也不许盖住锚点（夹取后压到落点＝用户看不见自己刚点了什么）", () => {
+  // 高度 300 的卡、锚点在 y=250：'above' 候选被夹到 y=8，跨 8..308 → 会把落点整个盖住
+  const p = placeCard({ anchor: { x: 222, y: 250 }, size: { w: 268, h: 300 }, viewport: PAD, gap: 14 });
+  const covers = 222 > p.x && 222 < p.x + 268 && 250 > p.y && 250 < p.y + 300;
+  assert.equal(covers, false, `浮卡 ${Math.round(p.x)},${Math.round(p.y)} 盖住了落点`);
+  assert.equal(p.coversPoint, false);
+});
+
+const sx = 268, sy = 224;   // 配合菜单实测尺寸
+const overlapPx = (p, b) => Math.round(Math.max(0, Math.min(p.x + sx, b.x + b.w) - Math.max(p.x, b.x))
+  * Math.max(0, Math.min(p.y + sy, b.y + b.h) - Math.max(p.y, b.y)));
+
+test("大浮层扫描定位：两个被选面都不许压，落点不许盖，且仍在落点附近", () => {
+  // 实测场景（装配配合菜单）：面 B 420×211、面 A 303×133，落点 (222,250) 落在面 B 里
+  const faceB = { x: 108.9, y: 175.6, w: 420.7, h: 210.9 };
+  const faceA = { x: 476.8, y: 330.9, w: 303.5, h: 132.7 };
+  const p = placeCardScan({ anchor: { x: 222, y: 250 }, size: { w: sx, h: sy }, viewport: PAD, avoid: [faceA, faceB], step: 12 });
+  assert.equal(overlapPx(p, faceA), 0, "不许压面 A");
+  assert.equal(overlapPx(p, faceB), 0, "不许压面 B");
+  assert.equal(p.coversPoint, false, "不许盖住落点");
+  assert.equal(p.inside, true, "不许出视口");
+  const d = Math.hypot(p.x + sx / 2 - 222, p.y + sy / 2 - 250);
+  assert.ok(d <= 260, `菜单中心距落点 ${d.toFixed(0)}px 必须 ≤260（比之前 316px 更近）`);
+});
+
+test("大浮层扫描定位：没有障碍时贴着落点放（不许无脑丢到角落）", () => {
+  const p = placeCardScan({ anchor: { x: 600, y: 400 }, size: { w: 268, h: 224 }, viewport: PAD, step: 12 });
+  const d = Math.hypot(p.x + 134 - 600, p.y + 112 - 400);
+  assert.ok(d <= 200, `无遮挡时应当贴近落点，实际 ${d.toFixed(0)}px`);
+  assert.equal(p.overlap, 0);
 });
 
 test("工具坞：可用高度不够时先压缩按钮，压到 48 才允许滚动", () => {

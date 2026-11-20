@@ -150,7 +150,15 @@ test("all supported legacy constraint schemas still build, including fix without
   const result = Solver.solveSketch(entities(), [specs[0]]);
   assert.equal(result.ok, true);
   assert.deepEqual(result.invalidConstraints, []);
-  assert.equal(result.dofApproximate, true);
+  /*
+   * v6：dof 改成**真实自由度**（n − rank(J)），dofApproximate 相应变成 false。
+   * 这条断言原来写的是 true（v5 是 n − m 估算）。语义变化是 v6 明确要求的，
+   * 判据也更强了：16 个自由度（矩形 4 + 圆 3 + 圆 3 + 折线 6，引用折线不计）减去
+   * 1 条独立方程（宽 = 20），剩 15。
+   */
+  assert.equal(result.dofApproximate, false);
+  assert.equal(result.dof, 15);
+  assert.equal(result.rank, 1);
 });
 
 setOC(await opencascade({ wasmBinary: fs.readFileSync(new URL("./public/replicad_single.wasm", import.meta.url)) }));

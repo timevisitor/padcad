@@ -35,6 +35,8 @@ function application(sketch) {
     performance, solveSketch, ELEM,
     redrawSketch() {}, renderDimPanel() {}, setStats() {}, showOverdefined() {},
     smartDimHighlight() {}, relHighlight() {}, refreshRelPad() {}, showDimEdit() {},
+    // 状态栏的自由度文案（main.js 里走 sketch-dof 的真实分析）。这里只测约束记账，不测文案。
+    sketchDofLine() { return "剩余自由度 0"; },
   });
   const functions = ["restoreEntities", "applyDim", "smartDimReset", "relReset", "buildRelSpec", "applyRelation", "applySmartSpec",
   // 从动尺寸：applySmartSpec 会经这两个函数创建可保存的测量定义

@@ -19,6 +19,7 @@ import { resolveFaceSelector, resolveEdgesSelector } from "./selectors.js";
 import { applyPatternOp } from "./pattern.js";
 import { SketchSession } from "./sketch.js";
 import { lookupOp } from "./op-registry.js";
+import { canReuseSnapshot } from "./history-cache.js";
 import "./ops-register.js";   // 功能模块在这里登记 op（三条并行线各占一个文件）
 import { solveSketch } from "./solver.js";
 
@@ -439,23 +440,85 @@ export function replayOp(shape, op, ctx = {}) {
   }
 }
 
+/** 会产出「增量体」（toolShape）的特征类型 —— 阵列/镜像要拿它当源 */
+const TOOL_GENERATORS = new Set(["extrude", "revolve", "sweep", "loft", "pattern", "mirror"]);
+export const generatesTool = (op) => TOOL_GENERATORS.has(op?.type);
+
+/**
+ * 实体还活着吗？
+ * replicad 的 delete() 把 _wrapped 置空，之后任何访问都会抛 "This object has been deleted"。
+ * 这里只读一次 wrapped（getter，无 wasm 调用）：被删过的历史快照不能拿来当复用起点，
+ * 否则续算出来的东西是坏的。命中就退回更早的起点/全量重放 —— 宁可慢，不能错。
+ */
+function aliveShape(shape) {
+  if (!shape) return false;
+  try { return !!shape.wrapped; } catch (_) { return false; }
+}
+
+/**
+ * 这次重放至少要从第几步开始（复用点之前的实体）。
+ *
+ * 判定与 preview-rebuild 完全一致：
+ *   ① 该步被 overrides 覆盖了 → 从它开始；
+ *   ② 该步的快照跟当前定义对不上（op/suppressed 改过、shape 换过、从没记过）→ 从它开始；
+ *   ③ 生成型特征没有 toolShape（下游阵列会拿不到源）→ 从它开始；
+ *   ④ 该步的实体已经不可用 → 从它开始。
+ * 全都命中「可复用」时只需重算最后一步（改最后一步参数是最常见的操作）。
+ */
+export function replayStart(hist, target, overrides = {}) {
+  for (let i = 0; i <= target; i++) {
+    const row = hist[i];
+    if (overrides[i] !== undefined) return i;
+    if (!row || !canReuseSnapshot(row) || !aliveShape(row.shape)) return i;
+    if (!row.suppressed && generatesTool(row.op) && !row.toolShape) return i;
+  }
+  return target;      // 全量可用：只重算目标这一步
+}
+
 /**
  * 从头重放到第 target 步（含）。
  * @param hist      历史数组，每项需有 op 字段
  * @param target    目标步索引
  * @param overrides { stepIndex: newOp } 覆盖某一步的定义
- * @returns {shape, steps, logs}
+ * @param opts      { full: true } 强制全量重放（对拍/调试用）
+ * @returns {shape, steps, totalSteps, fromStep, logs, snapshots, tools}
  */
-export function rebuild(hist, target, overrides = {}) {
+export function rebuild(hist, target, overrides = {}, opts = {}) {
   if (!hist.length) throw new Error("历史是空的");
   if (!Number.isInteger(target) || target < 0 || target >= hist.length) {
     throw new Error("重放目标不在历史范围内");
   }
-  const logs = [];
+  const start = opts.full ? 0 : replayStart(hist, target, overrides);
+  const logs = [];             // 只记这次真正算过的步（复用段不再重复记账）
   const snapshots = [];        // 每一步的中间结果，调用方要拿它回填历史
   const tools = [];            // 每一步产出的「增量体」（生成型特征才有），阵列/镜像要用
   let shape = null;
-  for (let i = 0; i <= target; i++) {
+
+  /*
+   * 复用段：找到「最早被改动的那一步」，把它之前的实体当作起点续算。
+   *
+   * 为什么必须 clone：replicad 的 fuse/cut 会消费掉操作数（实体的 wrapped 被 delete），
+   * 直接拿 history[start-1].shape 去 fuse，历史里那一步的实体当场就废了，
+   * 于是「撤销回到第 N 步」会拿到一个已删除的 shape。clone 一份给这次重放用。
+   *
+   * 快照/工具对于复用段**返回原对象**（不是新建的空壳），因为 project.cacheRebuild
+   * 要拿它回填 history —— 语义必须与全量重放完全一致。
+   */
+  if (start > 0) {
+    let resumed = null;
+    try { resumed = hist[start - 1].shape?.clone?.() || null; } catch (_) { resumed = null; }
+    if (!resumed) {
+      // 前缀的实体不知为何不可用（被别的路径删过 / 只存了定义）→ 老实从第一步全量重放
+      return rebuild(hist, target, overrides, { ...opts, full: true });
+    }
+    shape = resumed;
+    for (let i = 0; i < start; i++) {
+      tools[i] = hist[i]?.suppressed ? null : (hist[i]?.toolShape || null);
+      snapshots.push({ index: i, shape: hist[i]?.shape ?? null });
+    }
+  }
+
+  for (let i = start; i <= target; i++) {
     /*
      * 被「压制」的步骤直接跳过（SolidWorks 的 Suppress）。
      * 它跟「删除」的区别：定义还留着、随时能解压回来，只是这次不参与计算。
@@ -485,10 +548,19 @@ export function rebuild(hist, target, overrides = {}) {
     logs.push({ step: i, label: hist[i]?.label, ms });
     snapshots.push({ index: i, shape });
   }
-  return { shape, steps: target + 1, logs, snapshots, tools };
+  return {
+    shape,
+    steps: target + 1 - start,   // 这次真正重放的步数（全量重放时等于 target+1，与旧行为一致）
+    totalSteps: target + 1,
+    fromStep: start,
+    logs,
+    snapshots,
+    tools,
+  };
 }
 
 /** 把当前实体状态导出成一步的「定义」（给 commit 用） */
 export function makeOp(type, params) {
   return { type, ...params };
 }
+

@@ -43,3 +43,32 @@
 .view-controls-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
 .view-controls-grid button { padding-inline: 6px; }
 .view-controls-hint { margin: 10px 0 0; color: var(--muted, #9aa0a6); font-size: 12px; line-height: 1.5; }
+
+/* 视图立方（点面切视图）：30° 等轴测、viewBox 132×132，三个可见面 + 一个等轴测热区 */
+.view-cube {
+  display: block;
+  width: 132px;
+  height: 132px;
+  margin: 0 auto 6px;
+  touch-action: manipulation;
+}
+.view-cube .vc-face {
+  stroke: #c3b7a2;
+  stroke-width: 1.8;
+  stroke-linejoin: round;
+  cursor: pointer;
+  transition: fill 120ms ease-out;
+}
+.view-cube .vc-top { fill: var(--selected-bg, #f3ddd0); }
+.view-cube .vc-front { fill: #e3d9c6; }
+.view-cube .vc-right { fill: #f4ecdd; }
+.view-cube .vc-iso { fill: transparent; stroke: transparent; }
+.view-cube .vc-face:hover { fill: var(--accent-soft, #e2967a); }
+.view-cube .vc-face.on { fill: var(--accent, #bf5634); stroke: var(--accent, #bf5634); }
+.view-cube .vc-face.off { opacity: .45; }
+.view-cube .vc-hint {
+  fill: var(--muted, #675e50);
+  font-size: 11px;
+  text-anchor: middle;
+  pointer-events: none;
+}

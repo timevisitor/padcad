@@ -2,21 +2,14 @@
  * three.js 视口：显示 OCCT 实体、CAD 棱边、选中高亮、拾取
  */
 import * as THREE from "three";
+import { MeshBVH, acceleratedRaycast } from "three-mesh-bvh";
 import { OrbitCam } from "./camera.js";
-import { faceIdFromTriangle, trianglesOfFace } from "./kernel.js";
+import { faceIdFromTriangle, faceRangeOf } from "./kernel.js";
 import { renderPixelRatio, readGpuName, gpuTier, RenderGovernor } from "./render-budget.js";
+import { EdgeProjectionCache, pickNearestEdge, faceHighlightData } from "./perf-pick.js";
 
-const _v = new THREE.Vector3();
-
-/** 点到线段的屏幕距离 */
-function distToSeg(px, py, a, b) {
-  const dx = b[0] - a[0], dy = b[1] - a[1];
-  const L2 = dx * dx + dy * dy;
-  if (L2 < 1e-9) return Math.hypot(px - a[0], py - a[1]);
-  let t = ((px - a[0]) * dx + (py - a[1]) * dy) / L2;
-  t = Math.max(0, Math.min(1, t));
-  return Math.hypot(px - (a[0] + t * dx), py - (a[1] + t * dy));
-}
+/** 该面高亮几何的缓存上限（超出就整体丢弃，避免长时间会话里无限增长） */
+const FACE_CACHE_LIMIT = 48;
 
 export class Viewer {
   constructor(canvas) {
@@ -80,6 +73,10 @@ export class Viewer {
     this.pickEdge = null;
     this.meshData = null;
     this.raycaster = new THREE.Raycaster();
+    // 拾取只需要最近的一个交点，命中就停（BVH 的 firstHitOnly 靠它提前剪枝）
+    this.raycaster.firstHitOnly = true;
+    this._edgeCache = new EdgeProjectionCache();
+    this._faceCache = new Map();      // faceId → {mesh, edge} 高亮几何（跟着网格失效）
 
     this.cam = new OrbitCam(this.camera, canvas);
     this._needRender = true;
@@ -192,6 +189,8 @@ export class Viewer {
 
     if (this.solidMesh) { this.body.remove(this.solidMesh); this.solidMesh.geometry.dispose(); this.solidMesh = null; }
     if (this.edgeMesh) { this.body.remove(this.edgeMesh); this.edgeMesh.geometry.dispose(); this.edgeMesh = null; }
+    // 网格一换，按面缓存的高亮几何就全部失效（faceId / 顶点都已经变了）
+    this._disposeFaceCache();
 
     if (!meshData) {
       this.geometry = null;
@@ -213,18 +212,27 @@ export class Viewer {
     this.geometry = g;
 
     this.solidMesh = new THREE.Mesh(g, this.matBody);
+    // 有 boundsTree 就走 BVH，没有就自动退回 three 原本的 raycast —— 
+    // 预览/片体这些没有 BVH 的网格行为完全不变
+    this.solidMesh.raycast = acceleratedRaycast;
+    this._bvhMs = 0;
     this.body.add(this.solidMesh);
 
-    // CAD 棱边：夹角 >18° 的边才画，圆角/圆柱面自然被过滤掉
+    // CAD 棱边：优先用内核的拓扑边（OCCT 直接出的真棱边，跟三角数无关）；
+    // 内核没给（片体 / 老调用方）就退回 EdgesGeometry 的夹角法。
     // Edge extraction hashes every triangle: defer it until the precise commit.
     // The preview remains a real shaded solid, including visible diameter changes.
     if (!preview) {
-      const eg = new THREE.EdgesGeometry(g, 18);
+      const eg = meshData.edges?.positions?.length
+        ? this._edgeGeometryFromKernel(meshData.edges)
+        : new THREE.EdgesGeometry(g, 18);
       this.edgeMesh = new THREE.LineSegments(eg, this.matEdge);
       this.body.add(this.edgeMesh);
     }
 
     this._bbox = g.boundingBox.clone();
+    // 提交完成后趁空闲把 BVH 建好，别让用户第一次点模型时卡一下
+    if (!preview) this._scheduleBVH(g);
     if (fit) {
       // Sidebar changes can resize the canvas before their scheduled resize callback.
       this.resize();
@@ -237,42 +245,67 @@ export class Viewer {
   highlightFace(faceId) {
     this.clearHighlight();
     if (faceId == null || !this.meshData || !this.geometry) return;
-    const tris = trianglesOfFace(this.meshData.faceGroups, faceId);
-    if (!tris || !tris.length) return;
-
-    const idx = this.geometry.getIndex().array;
-    const pos = this.geometry.getAttribute("position").array;
-    const nor = this.geometry.getAttribute("normal").array;
-
-    const vp = [], vn = [], vi = [];
-    let c = 0;
-    for (const t of tris) {
-      for (let k = 0; k < 3; k++) {
-        const v = idx[t * 3 + k];
-        vp.push(pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]);
-        vn.push(nor[v * 3], nor[v * 3 + 1], nor[v * 3 + 2]);
-        vi.push(c++);
-      }
-    }
-    const hg = new THREE.BufferGeometry();
-    hg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(vp), 3));
-    hg.setAttribute("normal", new THREE.BufferAttribute(new Float32Array(vn), 3));
-    hg.setIndex(vi);
-    this.pickMesh = new THREE.Mesh(hg, this.matPick);
+    const entry = this._highlightFor(faceId);
+    if (!entry) return;
+    this.pickMesh = entry.mesh;
     this.overlay.add(this.pickMesh);
-
-    const pe = new THREE.EdgesGeometry(hg, 18);
-    this.pickEdge = new THREE.LineSegments(pe, this.matPickEdge);
+    this.pickEdge = entry.edge;
     this.overlay.add(this.pickEdge);
     this.invalidate();
   }
 
-  clearHighlight() {
-    for (const o of [this.pickMesh, this.pickEdge]) {
-      if (!o) continue;
-      this.overlay.remove(o);
-      o.geometry.dispose();
+  /**
+   * 按面取（或构建）高亮几何。
+   *
+   * 原来是每次 highlightFace 都重新 push 三个数组 + new EdgesGeometry：
+   * 拖动预览里 remapSelection 每帧都会重新高亮同一个面，等于每帧重建一遍。
+   * 面的三角在索引缓冲里本来就是连续一段，按 faceId 缓存住就行；
+   * 网格一换（setMesh）整张缓存丢弃，不会串到别的零件上。
+   */
+  _highlightFor(faceId) {
+    const cache = this._faceCache || (this._faceCache = new Map());
+    const cached = cache.get(faceId);
+    if (cached) return cached;
+    const range = faceRangeOf(this.meshData.faceGroups, faceId);
+    if (!range || !range.count) return null;
+    const data = faceHighlightData(this.meshData, faceId, range);
+    const hg = new THREE.BufferGeometry();
+    hg.setAttribute("position", new THREE.BufferAttribute(data.positions, 3));
+    hg.setAttribute("normal", new THREE.BufferAttribute(data.normals, 3));
+    hg.setIndex(new THREE.BufferAttribute(data.indices, 1));
+    // 面的轮廓线：单个面的三角很少，EdgesGeometry 在这里很便宜（实测 <0.1ms）
+    const pe = new THREE.EdgesGeometry(hg, 18);
+    const entry = {
+      mesh: new THREE.Mesh(hg, this.matPick),
+      edge: new THREE.LineSegments(pe, this.matPickEdge),
+      tris: data.tris,
+    };
+    if (this._faceCache.size >= FACE_CACHE_LIMIT) this._disposeFaceCache();
+    cache.set(faceId, entry);
+    return entry;
+  }
+
+  _disposeFaceCache() {
+    if (!this._faceCache) return;
+    for (const entry of this._faceCache.values()) {
+      entry.mesh.geometry.dispose();
+      entry.edge.geometry.dispose();
     }
+    this._faceCache.clear();
+  }
+
+  /** 屏幕上一条边的折线 → 可直接渲染的 LineSegments 几何（点不复制，用索引跳组） */
+  _edgeGeometryFromKernel(edges) {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(edges.positions, 3));
+    g.setIndex(new THREE.BufferAttribute(edges.index, 1));
+    return g;
+  }
+
+  clearHighlight() {
+    if (this.pickMesh) this.overlay.remove(this.pickMesh);
+    if (this.pickEdge) this.overlay.remove(this.pickEdge);
+    // 几何是缓存里的，这里不能 dispose —— 只摘掉场景节点
     this.pickMesh = this.pickEdge = null;
     this.invalidate();
   }
@@ -322,35 +355,25 @@ export class Viewer {
 
   // ------------------------------------------------------------ 边拾取（圆角/倒角用）
   /** 缓存边的离散点（由 refresh 时传入） */
-  setEdgeData(list) { this.edgeData = list || []; }
+  setEdgeData(list) {
+    this.edgeData = list || [];
+    // 同一个数组也可能被上层就地改写（补 dir/n1/n2），所以这里无条件让投影缓存失效
+    this._edgeCache?.invalidate();
+  }
 
   /**
    * 屏幕坐标 → 最近的拓扑边
    * 在屏幕空间做距离检测：模型边通常只有 1~2px 宽，用手指点不精确，
    * 所以给 28px 容差，取最近的一条。
+   *
+   * 投影结果按「相机指纹 + edgeData 身份」缓存：连点时相机不动，一次都不重算。
    */
   pickEdgeAt(clientX, clientY, maxPx = 28) {
     if (!this.edgeData || !this.edgeData.length) return null;
     const r = this.canvas.getBoundingClientRect();
-    const px = clientX - r.left, py = clientY - r.top;
-    let best = null, bestD = maxPx;
-    for (const e of this.edgeData) {
-      let prev = null;
-      for (const p of e.pts) {
-        _v.set(p[0], p[1], p[2]).project(this.camera);
-        if (!Number.isFinite(_v.z) || _v.z < -1 || _v.z > 1) {
-          prev = null;
-          continue;
-        }
-        const s = [(_v.x * 0.5 + 0.5) * r.width, (-_v.y * 0.5 + 0.5) * r.height];
-        if (prev) {
-          const d = distToSeg(px, py, prev, s);
-          if (d < bestD) { bestD = d; best = e; }
-        }
-        prev = s;
-      }
-    }
-    return best;
+    const projected = (this._edgeCache || (this._edgeCache = new EdgeProjectionCache()))
+      .get(this.edgeData, this.camera, r.width, r.height);
+    return pickNearestEdge(projected, clientX - r.left, clientY - r.top, maxPx);
   }
 
   /** 高亮一组边（传 edgePointSets 的条目数组） */
@@ -382,12 +405,58 @@ export class Viewer {
       ((clientX - r.left) / r.width) * 2 - 1,
       -((clientY - r.top) / r.height) * 2 + 1,
     );
+    this._ensureBVH();
     this.raycaster.setFromCamera(ndc, this.camera);
     const hits = this.raycaster.intersectObject(this.solidMesh, false);
     if (!hits.length) return null;
     const triIndex = hits[0].faceIndex;
     const faceId = faceIdFromTriangle(this.meshData.faceGroups, triIndex);
     return { faceId, point: hits[0].point, distance: hits[0].distance };
+  }
+
+  /**
+   * 按需建 BVH（点云不必在提交时就付这笔钱）。
+   *
+   * 实测：10 万三角的网格上 1000 次射线拾取，线性遍历 493ms；建 BVH 一次 ~40-90ms，
+   * 之后每次射线只走 O(log n)。零件越大越是数量级差距，小零件（1~3k 三角）建表
+   * 只要 1~2ms，也不虧。第一次拾取才会建，所以「打开工程 / 提交重建」这两条
+   * 最敏感的路径不会被它拖慢。
+   */
+  _ensureBVH() {
+    const g = this.geometry;
+    if (!g || g.boundsTree || g.__bvhFailed) return;
+    const t0 = performance.now();
+    try {
+      /*
+       * ⚠ 必须 indirect: true。
+       *
+       * MeshBVH 默认会把几何的索引缓冲**就地重排**（按 BVH 节点顺序），
+       * 而这块索引就是 meshData.triangles —— faceGroups 的 start/count 是**原始顺序**下的
+       * 三角区间，被重排之后「面 → 三角形」的映射全部错位：高亮会亮到别的面上，
+       * 而且渲染用的是同一块索引（模型本身也会跟着乱）。
+       * indirect 模式另外存一张间接表，几何索引一个字节都不动，
+       * 交点里的 faceIndex 仍会映射回原始三角序号。
+       */
+      g.boundsTree = new MeshBVH(g, { targetLeafSize: 10, indirect: true });
+    } catch (_) {
+      g.__bvhFailed = true;      // 建不起来就退回线性 raycast，宁可慢也不能错
+    }
+    this._bvhMs = (this._bvhMs || 0) + (performance.now() - t0);
+  }
+
+  /**
+   * 空闲时预建 BVH。
+   * 只在浏览器里有 requestIdleCallback 时才做；node/测试环境没有就保持「首次拾取再建」。
+   * 回调里先确认几何还是当前这块 —— 期间又 setMesh 过一次的话，别给死几何建表。
+   */
+  _scheduleBVH(geometry) {
+    if (typeof requestIdleCallback !== "function") return;
+    try {
+      requestIdleCallback(() => {
+        if (this.geometry !== geometry) return;
+        this._ensureBVH();
+      }, { timeout: 1500 });
+    } catch (_) { /* 老 WebView 上个别版本会抛，忽略 */ }
   }
 
   /** 点击 → 通知上层选中（带上屏幕坐标，选边时需要） */

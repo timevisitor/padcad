@@ -22,17 +22,27 @@ import { createPatternPanel } from "./pattern-panel.js";
 import { installViewControls } from "./view-controls.js";
 import { installWorkspaceUI } from "./workspace-ui.js";
 import { installPenCursor } from "./pen-cursor.js";
+import { state, bindSlots } from "./state.js";   // 全局状态容器（解耦第 1 步）
+import { contextActions, renderContextToolbar, KIND_TITLE } from "./ui-context.js";   // 语境工具栏（关联工具栏）
+import { installTapGestures } from "./ui-gestures.js";                               // 两指撤销 / 三指重做 / 双击
 import { findSurfaceDrivers, readCylinderFace } from "./surface-drivers.js";
 import { rebuildPreview } from "./preview-rebuild.js";
 import { markSnapshot } from "./history-cache.js";
+// 参数编辑事务 / 撤销命令栈（本轮新增：改参数、加特征、删除、压制、跳步都记成一条命令）
+import { createCommandStack, appendStep, commitStepOp, rebuildInto, replaceStep } from "./param-edit.js";
 import { runModelScript, normalizeScript, summarize, scriptFromHistory } from "./model-script.js";
 // 本轮 UI 接线用到的内核能力（都已在各自模块里实现并回归过，这里只做界面侧）
 import { massProperties } from "./inspect.js";
 import { stlBinary, objText, threeMF } from "./exporters.js";
 import { addPolygon, addSlot, addArc, addEllipse, trimSegment } from "./sketch-tools.js";
 import { lookupOp } from "./op-registry.js";
+// 智能草图（v6 第一阶段交付的三个模块，本阶段接进 UI）
+import { inferRelations, applyInferred, INFER_SYMBOLS } from "./sketch-infer.js";
+import { analyzeSketch, entityColors, SKETCH_STATES } from "./sketch-dof.js";
+import { dragSolve } from "./sketch-drag.js";
 import "./workspace-ui.css";
 import "./theme.css";   // Clay 主题：只改 token 与组件外观，必须在 workspace-ui.css 之后
+import "./assembly-ui.js";   // 装配模式（独立一层，自己的 DOM/CSS/场景，见 src/assembly-ui.js）
 
 import "./script-panel.css";
 
@@ -74,6 +84,30 @@ const snap = new SnapEngine();
 const SNAP_COLOR = "#ad650b";
 let snapGuides = [];          // 当前生效的追踪引导线
 
+// ---------------------------------------------------------------- 智能草图（v6 第二阶段：UI 接线）
+/*
+ * 三件事接进草图交互：
+ *   ① 画线每帧推理几何关系（水平/竖直/重合/中点/在线上/相切/平行/垂直/等长）：
+ *      光标坐标被吸到"满足关系"的位置，覆盖层画小图标 + 推导线；落点时把关系写成真约束。
+ *   ② 图元按自由度状态描边（完全定义黑 / 欠定义蓝 / 冲突红 / 引用灰）+ 底部状态条。
+ *   ③ 拖图元或特征点走 dragSolve：几何跟着手走，已有约束一条都不许破；拖不动就明说。
+ *
+ * 「自动关系」开关默认开。**关掉时连推理都不跑**（只保留 SnapEngine 的捕捉），理由：
+ *   推理会改坐标（把终点 y 吸到起点 y）。只吸附、不写约束的话，屏幕上是一条"看起来水平"
+ *   的线，实际差 1.5° —— 拉伸出去的件就是废的，而且没人会想到去查。
+ *   SolidWorks 关掉 Automatic Relations 时 Inferencing 也是整体关掉的，这里跟它一致。
+ */
+let autoRelate = true;
+let sketchInfer = null;            // 当前光标上的推理结果（覆盖层要读它）
+let sketchInferPending = [];       // 已落点但还没写进 constraints 的推理（等折线收尾拿到图元下标）
+let _inferMs = 0;                  // 最近一次推理耗时
+let _drawMs = 0;                   // 最近一次预览重画耗时
+let _analysisCache = null;         // 自由度分析缓存（签名不变就复用）
+let _conflictNoticeSig = "";       // 上一次已写进状态栏的冲突签名（只写一次，避免刷屏）
+let _analysisSig = "";
+let _analysisMs = 0;
+const _perfSamples = [];           // pointermove 帧样本（推理 + 预览）
+
 /** 平面 2D 坐标 → 屏幕 client 坐标（捕捉判定要用） */
 function sketchToScreen(p2d) {
   if (!sketch || !canvas) return null;
@@ -105,9 +139,15 @@ function snapAnchors() {
  * 把手指位置吸附到精确的特征点上。
  * 返回 {x, y, snapped}；没命中就返回原始坐标（snapped=false）。
  * 关键是：命中时返回的是**特征点的精确坐标**，不是屏幕反算值。
+ *
+ * v6：这里同时接**自动关系推理**（`inferAtCursor`）。两者的分工是硬规则：
+ *   捕捉（SnapEngine，端点/中点/圆心/交点）**优先** —— 它给的是图元上的精确点；
+ *   推理只在没捕捉命中时才改坐标（水平/竖直/重合/平行…），并且方向类关系照样给符号。
+ * 两者同时命中时，把两条提示合并成一行（"端点 · 水平"），不各画一个标记打架。
  */
 function updateSnap(clientX, clientY) {
-  if (!sketch || mode !== "sketch") { snap.clear(); snapGuides = []; drawSnapOverlay(); return null; }
+  // 判「在不在草图」只认 sketch 会话，不认 mode：点了「选择」之后 mode 会变成 select
+  if (!sketch) { snap.clear(); snapGuides = []; drawSnapOverlay(); return null; }
   const raw = sketch.screenTo2D(clientX, clientY, viewer.camera, canvas);
   if (!raw) { snap.clear(); snapGuides = []; drawSnapOverlay(); return null; }
 
@@ -116,26 +156,65 @@ function updateSnap(clientX, clientY) {
 
   snap.update([clientX, clientY], sketchToScreen, sources);
   snapGuides = snap.best ? [] : computeTracking([raw.x, raw.y], snapAnchors(), sketchToScreen);
-  drawSnapOverlay();
 
   const p = snap.apply([raw.x, raw.y]);
-  return { x: p[0], y: p[1], snapped: !!snap.best, kind: snap.best?.kind };
+  const inf = inferAtCursor(raw.x, raw.y);      // 用**未吸附**的手指坐标推理
+  drawSnapOverlay();                            // sketchInfer 已经更新，覆盖层要按它画
+  if (inf && inf.snapped?.b && !snap.best && sketchTool === "line" && sketch.draft) {
+    // 推理生效（水平/竖直/重合…）：用推理后的坐标
+    return { x: inf.snapped.b[0], y: inf.snapped.b[1], snapped: true, kind: inf.best?.type || "infer", inferred: inf.applied };
+  }
+  return { x: p[0], y: p[1], snapped: !!snap.best, kind: snap.best?.kind, inferred: inf?.applied || [] };
+}
+
+/**
+ * 光标处跑一次自动关系推理（只在「直线/折线」有草稿时有意义）。
+ *
+ * 为什么给 inferRelations 传**手指原始坐标**而不是捕捉后的点：
+ * 捕捉命中的是图元上已有的精确点，拿它去推理"是否水平"没有意义（那条线已经定了）；
+ * 而手指位置才代表用户想画的方向。捕捉优先的裁决在 updateSnap 里做。
+ */
+function inferAtCursor(x, y) {
+  sketchInfer = null;
+  if (!sketch || !autoRelate) return null;
+  const d = sketch.draft;
+  if (sketchTool !== "line" || !d || !d.pts?.length) return null;
+  const a = d.pts[d.pts.length - 1];
+  const mmPerPx = 1 / Math.max(1e-6, sketchScale());
+  const t0 = performance.now();
+  try {
+    sketchInfer = inferRelations(sketch.entities, { kind: "segment", a: [a[0], a[1]], b: [x, y] }, {
+      mmPerPx, distTolPx: 10,
+    });
+  } catch (e) {
+    console.warn("inferRelations 失败", e);
+    sketchInfer = null;
+  }
+  _inferMs = performance.now() - t0;
+  return sketchInfer;
 }
 
 /**
  * 画一条线性尺寸（尺寸线 + 延伸线 + 箭头 + 数值）。
  * 参照 SolidWorks：尺寸线画在两个点的外侧，箭头指回被测的那条边。
  */
-function drawLinearDim(ctx, a, b, text, offsetPx) {
+function drawLinearDim(ctx, a, b, text, offsetPx, bad = false) {
   const dx = b[0] - a[0], dy = b[1] - a[1];
   const L = Math.hypot(dx, dy) || 1;
   const nx = -dy / L, ny = dx / L;              // 垂直方向
   const ax = a[0] + nx * offsetPx, ay = a[1] + ny * offsetPx;
   const bx = b[0] + nx * offsetPx, by = b[1] + ny * offsetPx;
+  /*
+   * bad = 这条尺寸**满足不了**（过定义组里的元凶）。
+   * SolidWorks 的做法：未满足的尺寸用红色显示**目标值** —— 图形停在求解器回滚后的几何上，
+   * 而标注写的是用户要的值，所以必须靠颜色说清"这不是现在的实际尺寸"。
+   * 本轮修之前它是橙色（和正常尺寸一个样），用户看不出哪条尺寸在打架。
+   */
+  const ink = bad ? "#e0362c" : "rgba(255,179,64,.95)";
 
   ctx.save();
-  ctx.strokeStyle = "rgba(255,179,64,.95)";
-  ctx.fillStyle = "rgba(255,179,64,.95)";
+  ctx.strokeStyle = ink;
+  ctx.fillStyle = ink;
   ctx.lineWidth = 1.4;
 
   // 尺寸线
@@ -167,9 +246,9 @@ function drawLinearDim(ctx, a, b, text, offsetPx) {
   ctx.font = "600 12px system-ui, sans-serif";
   const tw = ctx.measureText(label).width;
   const off = 11 + (dy === 0 ? 4 : -4);
-  ctx.fillStyle = "rgba(12,14,18,.88)";
+  ctx.fillStyle = bad ? "rgba(224,54,44,.94)" : "rgba(12,14,18,.88)";
   ctx.fillRect(mx - tw / 2 - 4, my - off - 8, tw + 8, 15);
-  ctx.fillStyle = "#ffb340";
+  ctx.fillStyle = bad ? "#fff" : "#ffb340";
   ctx.textAlign = "center";
   ctx.fillText(label, mx, my - off + 2);
   ctx.textAlign = "left";
@@ -353,31 +432,46 @@ function drawDimAnnotations(ctx, r) {
 
   if (!sketch.constraints.length) return;
 
+  /*
+   * 冲突映射：analyzeSketch 给的 conflicts[].index 是 sketch.constraints 的**全局下标**，
+   * 而下面的循环按图元过滤 —— 以前用过滤后数组的位置去对，永远对不上（等于没映射）。
+   * 这里先把冲突下标收成集合，再在遍历时带上全局下标 ci。
+   */
+  const conflictIdx = new Set();
+  for (const c of (sketchAnalysis()?.conflicts || [])) {
+    if (c.index != null) conflictIdx.add(c.index);
+    for (const i of (c.with || [])) conflictIdx.add(i);
+  }
+
   sketch.entities.forEach((e, i) => {
-    const dims = sketch.constraints.filter((c) => c.type === "fixed" && c.e === i);
+    const dims = sketch.constraints
+      .map((c, ci) => ({ c, ci }))
+      .filter(({ c }) => c.type === "fixed" && c.e === i);
     if (!dims.length) return;
 
     if (e.kind === "rect") {
-      for (const d of dims) {
+      for (const { c: d, ci } of dims) {
+        const bad = conflictIdx.has(ci);
         if (d.k === "w") {
           const bl = toS([e.c[0] - e.w / 2, e.c[1] - e.h / 2]);
           const br = toS([e.c[0] + e.w / 2, e.c[1] - e.h / 2]);
-          if (bl && br) drawLinearDim(ctx, bl, br, `${(+d.value).toFixed(1)}`, 34);
+          if (bl && br) drawLinearDim(ctx, bl, br, `${(+d.value).toFixed(1)}`, 34, bad);
         } else if (d.k === "h") {
           const tr = toS([e.c[0] + e.w / 2, e.c[1] + e.h / 2]);
           const br = toS([e.c[0] + e.w / 2, e.c[1] - e.h / 2]);
-          if (tr && br) drawLinearDim(ctx, br, tr, `${(+d.value).toFixed(1)}`, -34);
+          if (tr && br) drawLinearDim(ctx, br, tr, `${(+d.value).toFixed(1)}`, -34, bad);
         }
       }
     } else if (e.kind === "circle") {
-      for (const d of dims) {
+      for (const { c: d, ci } of dims) {
         if (d.k !== "r") continue;
+        const bad = conflictIdx.has(ci);
         const c = toS([e.c[0], e.c[1]]);
         const q = toS([e.c[0] + e.r, e.c[1]]);
         if (!c || !q) continue;
         ctx.save();
-        ctx.strokeStyle = "rgba(255,179,64,.95)";
-        ctx.fillStyle = "rgba(255,179,64,.95)";
+        ctx.strokeStyle = bad ? "#e0362c" : "rgba(255,179,64,.95)";
+        ctx.fillStyle = bad ? "#e0362c" : "rgba(255,179,64,.95)";
         ctx.lineWidth = 1.4;
         ctx.beginPath(); ctx.moveTo(c[0], c[1]); ctx.lineTo(q[0], q[1]); ctx.stroke();
         ctx.beginPath(); ctx.arc(c[0], c[1], 2.5, 0, Math.PI * 2); ctx.fill();
@@ -385,9 +479,9 @@ function drawDimAnnotations(ctx, r) {
         ctx.font = "600 12px system-ui, sans-serif";
         const tw = ctx.measureText(label).width;
         const mx = (c[0] + q[0]) / 2, my = (c[1] + q[1]) / 2;
-        ctx.fillStyle = "rgba(12,14,18,.88)";
+        ctx.fillStyle = bad ? "rgba(224,54,44,.94)" : "rgba(12,14,18,.88)";
         ctx.fillRect(mx - tw / 2 - 4, my - 18, tw + 8, 15);
-        ctx.fillStyle = "#ffb340";
+        ctx.fillStyle = bad ? "#fff" : "#ffb340";
         ctx.textAlign = "center";
         ctx.fillText(label, mx, my - 8);
         ctx.textAlign = "left";
@@ -433,6 +527,414 @@ function drawFeaturePoints(ctx, r) {
 let _overlaySig = "";        // 上一帧的相机签名（尺寸标注只在相机变了才重画）
 let _overlayRedraws = 0;     // 重画次数（调试出口，用来验证节流有效）
 
+// ---------------------------------------------------------------- 智能草图：状态分析 / 状态条
+
+/** 草图状态签名：图元的几何 + 约束（类型/值/目标）都进哈希 —— 变了才重算 analyzeSketch */
+function sketchStateSig() {
+  if (!sketch) return "";
+  let h = 2166136261;
+  const mix = (v) => { h ^= Math.round((Number(v) || 0) * 1000); h = Math.imul(h, 16777619); };
+  mix(sketch.entities.length); mix(sketch.constraints.length);
+  for (const e of sketch.entities) {
+    if (!e) continue;
+    mix(e.ref ? 7 : 0);
+    if (e.kind === "rect") { mix(e.c[0]); mix(e.c[1]); mix(e.w); mix(e.h); }
+    else if (e.kind === "circle") { mix(e.c[0]); mix(e.c[1]); mix(e.r); }
+    else if (e.kind === "polyline") { mix(e.pts.length); for (const q of e.pts) { mix(q[0]); mix(q[1]); } mix(e.closed ? 1 : 0); }
+  }
+  for (const c of sketch.constraints) { mix(String(c?.type || "").length); mix(c?.value ?? 0); mix(c?.e ?? -1); }
+  return String(h >>> 0);
+}
+
+function invalidateSketchAnalysis() { _analysisSig = ""; }
+
+/**
+ * 当前草图的自由度分析（带缓存）。
+ *
+ * 频率控制（本阶段唯一的性能风险点）：`analyzeSketch` 内部要克隆 + 求解 + QR，
+ * 100 约束时约 12ms —— 绝不能每帧跑。所以：
+ *   ① 用「几何 + 约束」签名做缓存，只有真变了才重算；
+ *   ② 拖动中（grabState 存在）一律用上一帧的缓存，松手后再统一重算一次。
+ */
+function sketchAnalysis({ fresh = false } = {}) {
+  if (!sketch) return null;
+  if (grabState && _analysisCache && !fresh) return _analysisCache;
+  const sig = sketchStateSig();
+  if (!fresh && _analysisCache && sig === _analysisSig) return _analysisCache;
+  const t0 = performance.now();
+  try { _analysisCache = analyzeSketch(sketch.entities, sketch.constraints, { probe: false }); }
+  catch (e) { console.warn("analyzeSketch 失败", e); _analysisCache = null; }
+  _analysisSig = sig;
+  _analysisMs = performance.now() - t0;
+  return _analysisCache;
+}
+
+/**
+ * 推理符号表（验收用）：每种关系的 glyph 与中文名。
+ * 断言点：glyph 互不相同、且除了「等长」以外没有任何符号长得像 "="（本轮把恒等的 ═/║ 换掉了）。
+ */
+function inferSymbolsTable() {
+  return Object.fromEntries(Object.entries(INFER_SYMBOLS).map(([k, v]) => [k, { glyph: v.glyph, label: v.label }]));
+}
+
+/**
+ * 状态条一行文案。三种「不是状态」的情况必须先说清楚，再说定义状态：
+ *   · 空草图 —— 没有图元就谈不上"完全定义"（analyzeSketch 对空草图给 defined，直接照抄会显示"完全定义"）
+ *   · 草稿未提交 —— 正在拉的那条线还没进 entities，此时说"完全定义"是在骗人
+ *   · 过定义 —— 编号必须带类型：约束叫「关系 #N」，图元叫「#N」，否则 "#4 与 #1" 分不清说的是约束还是图元
+ */
+function sketchStateText(a) {
+  if (!a || !sketch) return "";
+  if (!sketch.entities.length) {
+    return sketch.draft ? "绘制中（草稿未提交）" : "空草图：还没有图元";
+  }
+  if (sketch.draft) return "绘制中（草稿未提交）";
+  if (a.status === "invalid") return "约束定义有误";
+  if (a.status === "defined") return "完全定义";
+  if (a.status === "overdefined") {
+    const c = a.conflicts?.[0];
+    if (!c) return "过定义";
+    const others = (c.with && c.with.length ? c.with : (c.group || []).filter((i) => i !== c.index));
+    // 篇幅受限（状态条是胶囊，宽度固定）：只在第一个编号前写「关系」，其余靠 tooltip 说全。
+    return others.length
+      ? `过定义：关系 #${c.index + 1} 与 #${others.map((i) => i + 1).join("、#")} 冲突`
+      : `过定义：关系 #${c.index + 1} 无法满足`;
+  }
+  return `欠定义：剩 ${a.dof} 个自由度`;
+}
+
+/**
+ * 状态条/提示里的「自由度」口径（唯一来源 = sketch-dof 的 analyzeSketch）。
+ *
+ * 旧文案是 `估算剩余自由度 ${res.dof}`，那个数来自 solver 的 n − m（参数数 − 约束条数）：
+ * 过定义时照样算出 0，于是画面上一半说"过定义、有冲突"，状态栏却写"剩余自由度 0"——
+ * 用户读成"已经完全定义"，自相矛盾（本轮视觉复核挑出来的第 1 条）。
+ * 现在一律用真实分析结果，且过定义时不谈自由度。
+ */
+function sketchDofLine() {
+  const a = sketchAnalysis();
+  if (!a) return "";
+  if (a.status === "overdefined") {
+    const c = a.conflicts?.[0];
+    return `过定义：${a.conflicts.length} 处冲突${c ? `（关系 #${c.index + 1}）` : ""}，几何已回滚未改动`;
+  }
+  if (a.status === "defined") return "完全定义（剩余自由度 0）";
+  if (a.status === "invalid") return "约束定义有误";
+  return `剩余自由度 ${a.dof}`;
+}
+
+const STATE_INK = {
+  defined: "#1f2328", underdefined: "#2f6fed", overdefined: "#e0362c", conflict: "#e0362c",
+  reference: "#9aa4b2",
+  empty: "#9aa4b2",      // 空草图 / 草稿未提交不是"定义状态"，用中性灰，别冒充黑/蓝/红
+  drafting: "#675e50",
+};
+
+/** 草图状态条（图元状态 + 删除冲突关系 + 自动关系开关）。DOM 由本文件创建：index.html 已冻结 */
+function ensureSketchStateUI() {
+  if ($("sketchState")) return $("sketchState");
+  const box = document.createElement("div");
+  box.id = "sketchState";
+  box.className = "hidden";
+  box.innerHTML = `<span class="ss-dot"></span><span class="ss-text"></span>`;
+  /*
+   * 修复入口：过定义时直接把"该删的那条关系"做成按钮。
+   * 状态条只说明"哪儿坏了"是不够的 —— 用户点完按钮要真的把关系删掉并重解（本轮视觉复核第 1 条第 ④ 点）。
+   */
+  const fix = document.createElement("button");
+  fix.type = "button";
+  fix.id = "sketchFixConflict";
+  fix.className = "ss-btn ss-fix hidden";
+  fix.addEventListener("click", () => deleteConflictRelation());
+  box.append(fix);
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.id = "sketchAutoRel";
+  btn.className = "ss-btn";
+  btn.textContent = "自动关系";
+  btn.title = "画线时自动推断几何关系（水平/竖直/重合/平行/垂直/相切…）并写入约束";
+  btn.addEventListener("click", () => setAutoRelate(!autoRelate));
+  box.append(btn);
+  document.body.append(box);
+  return box;
+}
+
+function setAutoRelate(on) {
+  autoRelate = !!on;
+  if (!autoRelate) { sketchInfer = null; sketchInferPending = []; }
+  const btn = $("sketchAutoRel");
+  if (btn) btn.classList.toggle("on", autoRelate);
+  updateSketchStateUI();
+  drawSnapOverlay();
+  setStats(autoRelate
+    ? "自动关系已开：画线时自动吸附水平/竖直/重合等，并写入几何关系（符号出现在光标旁）"
+    : "自动关系已关：只保留捕捉（端点/中点/圆心），不再推理、也不再自动写约束");
+}
+
+/** 刷新底部状态条（草图外隐藏） */
+function updateSketchStateUI() {
+  const box = ensureSketchStateUI();
+  if (!box) return;
+  if (!sketch) { box.classList.add("hidden"); return; }
+  const a = sketchAnalysis();
+  if (!a) { box.classList.add("hidden"); return; }
+  box.classList.remove("hidden");
+  const text = sketchStateText(a);
+  const t = box.querySelector(".ss-text");
+  if (t && t.textContent !== text) t.textContent = text;
+  /*
+   * 状态码：空草图 / 草稿未提交都不是"定义状态"，单独给码 ——
+   * 否则状态点会按 analyzeSketch 的 defined 涂成黑色，看着像"已经标全了"。
+   */
+  const code = !sketch.entities.length ? (sketch.draft ? "drafting" : "empty") : sketch.draft ? "drafting" : a.status;
+  const dot = box.querySelector(".ss-dot");
+  if (dot) dot.style.background = STATE_INK[code] || STATE_INK.underdefined;
+  box.dataset.status = code;
+  box.dataset.dof = String(a.dof ?? "");
+  box.title = (a.messages || []).join("\n");
+  // 冲突修复入口：只在过定义时出现，按钮上写明要删哪一条
+  const fix = $("sketchFixConflict");
+  if (fix) {
+    const c = a.conflicts?.[0];
+    if (a.status === "overdefined" && c) {
+      const victim = c.removable != null ? c.removable : c.index;
+      const label = sketch.constraints[victim]?.label || sketch.constraints[victim]?.type || "";
+      fix.textContent = `删除冲突关系 #${victim + 1}`;
+      fix.dataset.index = String(victim);
+      fix.title = (c.removable != null
+        ? "删掉这一条后其余关系可以同时满足（已重解验证过）"
+        : "删掉这一条冲突关系，草图会自动重新求解") + (label ? `\n要删的是：${label}` : "");
+      fix.classList.remove("hidden");
+    } else {
+      fix.classList.add("hidden");
+      fix.dataset.index = "";
+    }
+  }
+  const btn = $("sketchAutoRel");
+  if (btn) btn.classList.toggle("on", autoRelate);
+  refreshDimPanelHint();        // 尺寸面板的「约束 N 条」必须与状态条同源，别停在旧数
+  /*
+   * 过定义时把状态栏那一行也换掉。
+   *
+   * 为什么需要这一步：状态栏是"上一条动作的回执"，加关系失败后留在那儿的还是
+   * 「已添加「固定」· 求解 0 次迭代 · 完全定义（剩余自由度 0）」—— 和状态条的"过定义"直接打架。
+   * 只在冲突签名变化时写一次，避免每次重画都刷屏。
+   */
+  if (code === "overdefined") {
+    const sig = `${a.conflicts.length}:${a.conflicts.map((c) => c.index).join(",")}`;
+    if (sig !== _conflictNoticeSig) {
+      _conflictNoticeSig = sig;
+      setStats(`冲突：${sketchStateText(a)} · 点状态条上的按钮可直接删除冲突关系`);
+    }
+  } else if (_conflictNoticeSig) {
+    _conflictNoticeSig = "";
+  }
+}
+
+/**
+ * 删掉一条冲突关系并重解。
+ * 判据不是"删掉了"，而是"删完之后草图不再是过定义"——所以这里重解 + 重算分析 + 重画。
+ */
+function deleteConflictRelation() {
+  if (!sketch) return false;
+  const a = sketchAnalysis();
+  const c = a?.conflicts?.[0];
+  if (!c) return false;
+  const idx = c.removable != null ? c.removable : c.index;
+  const gone = sketch.constraints[idx];
+  if (!gone) return false;
+  sketch.constraints.splice(idx, 1);
+  const before = JSON.parse(JSON.stringify(sketch.entities));
+  const res = solveSketch(sketch.entities, sketch.constraints);
+  if (!res.ok) {
+    restoreEntities(before);
+    setStats(`删掉「${gone.label || gone.type}」后仍然无解，已回滚（冲突不止一处，接着删状态条上提示的那条）`);
+    invalidateSketchAnalysis();
+    redrawSketch();
+    return false;
+  }
+  invalidateSketchAnalysis();
+  dimEntity = dimEntity == null ? null : Math.min(dimEntity, sketch.entities.length - 1);
+  renderDimPanel();
+  redrawSketch();
+  const after = sketchAnalysis();
+  setStats(`已删除冲突关系「${gone.label || gone.type}」· 求解 ${res.iterations} 次迭代 · ${sketchDofLine()}`);
+  return after?.status !== "overdefined";
+}
+
+/**
+ * 图元按定义状态描边：完全定义黑 / 欠定义蓝 / 冲突红 / 引用灰。
+ *
+ * 为什么画在 2D 覆盖层而不是 3D 线：`viewer.setSketchLines` 只有"普通/高亮"两档
+ * （viewer.js 不在本阶段可改范围），而覆盖层本来就负责尺寸、特征点、捕捉标记，
+ * 坐标也是现算的 —— 加一层逐图元描边最省事，而且和已有 y 轴对齐逻辑一致。
+ * 被选中（草图里点中）的轮廓走 3D 那层的黄色高亮，这里跳过，否则"选中了"看不出来。
+ */
+function drawEntityStates(ctx, r) {
+  if (!sketch) return;
+  const a = sketchAnalysis();
+  if (!a) return;
+  const colors = entityColors(a);
+  const sel = Array.isArray(sketch.selected) ? new Set(sketch.selected) : (sketch.selected || new Set());
+  ctx.save();
+  ctx.lineCap = "round";
+  sketch.entities.forEach((e, i) => {
+    if (!e) return;
+    if (sel.size && sel.has(i)) return;
+    ctx.strokeStyle = e.ref ? SKETCH_STATES.reference.color : (colors[i] || SKETCH_STATES.underdefined.color);
+    ctx.lineWidth = e.kind === "polyline" ? 2 : 2.2;
+    ctx.beginPath();
+    const put = (p) => { const s = sketchToScreen(p); return s ? [s[0] - r.left, s[1] - r.top] : null; };
+    if (e.kind === "rect") {
+      const hw = e.w / 2, hh = e.h / 2;
+      const pts = [[e.c[0] - hw, e.c[1] - hh], [e.c[0] + hw, e.c[1] - hh], [e.c[0] + hw, e.c[1] + hh], [e.c[0] - hw, e.c[1] + hh]];
+      let first = true;
+      for (const p of pts) { const q = put(p); if (!q) return; if (first) { ctx.moveTo(q[0], q[1]); first = false; } else ctx.lineTo(q[0], q[1]); }
+      ctx.closePath();
+    } else if (e.kind === "circle") {
+      const c = put(e.c), rim = put([e.c[0] + e.r, e.c[1]]);
+      if (!c || !rim) return;
+      ctx.arc(c[0], c[1], Math.hypot(rim[0] - c[0], rim[1] - c[1]), 0, Math.PI * 2);
+    } else if (e.kind === "polyline") {
+      let first = true;
+      for (const p of e.pts) { const q = put(p); if (!q) return; if (first) { ctx.moveTo(q[0], q[1]); first = false; } else ctx.lineTo(q[0], q[1]); }
+      if (e.closed) ctx.closePath();
+    } else return;
+    ctx.stroke();
+  });
+  ctx.restore();
+}
+
+const INFER_TEAL = "#006a70";        // Clay 主题的 dimension 青（和橙色捕捉标记区分开）
+const INFER_DIR_TYPES = new Set(["horizontal", "vertical", "parallel", "perpendicular", "tangent", "equalLength"]);
+const INFER_POINT_TYPES = new Set(["coincident", "midpoint", "onLine"]);
+
+/**
+ * 覆盖层可画区域的左边界（相对覆盖层画布的左缘，CSS px）。
+ *
+ * 左缘工具坞 / 收起后的坞把手是**浮在画布上**的：草图覆盖层按整个画布尺寸画，
+ * 画到坞下面的部分会被坞盖住 —— 推导线看起来像被切断（本轮视觉复核第 3 条）。
+ * 这里把坞（和把手）的右缘算进来，推导线裁在这个边界右边、符号框也往右让。
+ */
+function overlayAvailLeft(r) {
+  let avail = 0;
+  for (const id of ["toolDock", "dockHandle"]) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    const st = getComputedStyle(el);
+    if (st.display === "none" || st.visibility === "hidden") continue;
+    const q = el.getBoundingClientRect();
+    if (q.width < 2) continue;
+    avail = Math.max(avail, q.right - r.left + 6);
+  }
+  return Math.max(0, Math.min(r.width * 0.4, avail));
+}
+
+/**
+ * 画推理符号：小方框 + 符号（18px 图标，照 SolidWorks 的关系图标）+ 沿吸附后那条线的推导线。
+ * 点类符号（重合/中点/在线上）在捕捉同时命中时不画 —— 捕捉标记已经在同一个位置说了同一件事，
+ * 两个标记叠在一起就是"打架"。
+ *
+ * 三处硬约束（本轮视觉复核第 3 条）：
+ *   ① 推导线只画在**画布可用区**里 —— 左缘工具坞是浮在画布上的，线穿到它下面等于被切掉一截；
+ *   ② 推导线与**预览线分开**：预览是实线（在 3D 层，实心琥珀色），推导线是虚线并且**侧移 7px**，
+ *      否则两条线完全重合，用户只看到一条"半实半虚"的糊线；
+ *   ③ 水平/竖直符号**按线段画**，不用字形（"═" 在系统字体里就是 "="）。
+ */
+function drawInferSymbols(ctx, r) {
+  const inf = sketchInfer;
+  if (!sketch || !inf || !inf.symbols?.length) return;
+  const toS = (p) => { const s = sketchToScreen(p); return s ? [s[0] - r.left, s[1] - r.top] : null; };
+  const a2 = inf.snapped?.a ? toS(inf.snapped.a) : null;
+  const b2 = inf.snapped?.b ? toS(inf.snapped.b) : null;
+  const hasDir = (inf.applied || []).some((t) => INFER_DIR_TYPES.has(t));
+
+  // 画布可用区的左边界（工具坞 / 坞把手挡住的区域）
+  const availLeft = overlayAvailLeft(r);
+
+  // 推导线：沿"吸附后"的那条线，法向侧移 7px 并两头各延长 18px，虚线青色
+  if (hasDir && a2 && b2) {
+    const dx = b2[0] - a2[0], dy = b2[1] - a2[1], L = Math.hypot(dx, dy) || 1;
+    let nx = -dy / L, ny = dx / L;
+    if (ny > 0) { nx = -nx; ny = -ny; }        // 统一往屏幕上方那一侧偏
+    const off = 7, ext = 18;
+    const ux = dx / L, uy = dy / L;
+    const p0 = [a2[0] - ux * ext + nx * off, a2[1] - uy * ext + ny * off];
+    const p1 = [b2[0] + ux * ext + nx * off, b2[1] + uy * ext + ny * off];
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(Math.max(0, availLeft), 0, Math.max(1, r.width - Math.max(0, availLeft)), r.height);
+    ctx.clip();                                 // ① 裁到可用区
+    ctx.setLineDash([7, 5]);
+    ctx.strokeStyle = "rgba(0,106,112,.8)";
+    ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.moveTo(p0[0], p0[1]); ctx.lineTo(p1[0], p1[1]); ctx.stroke();
+    ctx.restore();
+  }
+
+  // 符号摆放：方向类沿线条法向往上偏（别压线），点类往左上偏一点
+  let nx = 0, ny = -1;
+  if (a2 && b2) {
+    const dx = b2[0] - a2[0], dy = b2[1] - a2[1], L = Math.hypot(dx, dy) || 1;
+    nx = -dy / L; ny = dx / L;
+    if (ny > 0) { nx = -nx; ny = -ny; }
+  }
+  const shown = (inf.symbols || []).filter((s) => !(snap.best && INFER_POINT_TYPES.has(s.kind)));
+  const BOX = 20;                       // 平板上手指/眼睛的尺度：18px 偏小，20px 更清楚
+  let k = 0;
+  let firstLabelAt = null;
+  for (const s of shown) {
+    const at = toS(s.at);
+    if (!at) continue;
+    const off = BOX / 2 + 8 + k * (BOX + 7);
+    const dirSym = INFER_DIR_TYPES.has(s.kind);
+    const x = dirSym ? at[0] + nx * off : at[0] - off * 0.8;
+    const y = dirSym ? at[1] + ny * off : at[1] - off * 0.8;
+    const bx = Math.max(Math.max(2, availLeft), Math.min(r.width - BOX - 2, Math.round(x - BOX / 2)));
+    const by = Math.max(2, Math.min(r.height - BOX - 2, Math.round(y - BOX / 2)));
+    ctx.save();
+    ctx.beginPath();
+    if (typeof ctx.roundRect === "function") ctx.roundRect(bx, by, BOX, BOX, 4);
+    else ctx.rect(bx, by, BOX, BOX);
+    ctx.fillStyle = "rgba(253,250,243,.96)";
+    ctx.fill();
+    ctx.strokeStyle = INFER_TEAL;
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+    ctx.fillStyle = INFER_TEAL;
+    if (s.kind === "horizontal" || s.kind === "vertical") {
+      // ③ 单笔画几何图形：水平一条横线、竖直一条竖线，笔画数本身就是语义
+      const cxp = bx + BOX / 2, cyp = by + BOX / 2, half = 6;
+      ctx.beginPath();
+      if (s.kind === "horizontal") { ctx.moveTo(cxp - half, cyp); ctx.lineTo(cxp + half, cyp); }
+      else { ctx.moveTo(cxp, cyp - half); ctx.lineTo(cxp, cyp + half); }
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = INFER_TEAL;
+      ctx.stroke();
+    } else {
+      ctx.font = "600 13px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(s.glyph || "?", bx + BOX / 2, by + BOX / 2 + 0.5);
+    }
+    ctx.restore();
+    if (!firstLabelAt) firstLabelAt = [bx + BOX, by + BOX / 2];
+    k++;
+  }
+  // 没有捕捉命中时，把关系名写在符号右边（有捕捉时合并到捕捉那一行，见 drawSnapOverlay 末尾）
+  if (!snap.best && firstLabelAt && shown.length) {
+    const label = shown.map((s) => s.label).join(" · ");
+    ctx.save();
+    ctx.fillStyle = INFER_TEAL;
+    ctx.font = "600 12px system-ui, sans-serif";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    const x = Math.min(r.width - 8 - ctx.measureText(label).width, firstLabelAt[0] + 6);
+    ctx.fillText(label, Math.max(4, x), firstLabelAt[1]);
+    ctx.restore();
+  }
+}
+
 function drawSnapOverlay(rect = null) {
   const o = document.getElementById("snapOverlay");
   if (!o || !canvas) return;
@@ -452,6 +954,9 @@ function drawSnapOverlay(rect = null) {
    */
   if (!sketch) return;
 
+  // ① 图元按定义状态描边（黑/蓝/红/灰）—— 画在所有标注之下，别盖住尺寸与符号
+  drawEntityStates(ctx, r);
+
   // 尺寸标注独立于捕捉开关：标过就应该一直看得到
   drawDimAnnotations(ctx, r);
 
@@ -462,6 +967,9 @@ function drawSnapOverlay(rect = null) {
    * 引用图元（e.ref）跳过：一条 48 点采样的引用线会画出几十个点，糊成一片。
    */
   drawFeaturePoints(ctx, r);
+
+  // ② 自动关系推理符号 + 推导线（捕捉标记还没画，两者互斥/合并的裁决在各自的函数里）
+  drawInferSymbols(ctx, r);
 
   if (!snap.enabled) return;
 
@@ -521,7 +1029,17 @@ function drawSnapOverlay(rect = null) {
   ctx.stroke();
   ctx.fillStyle = SNAP_COLOR;
   ctx.font = "12px system-ui, sans-serif";
-  ctx.fillText(SNAP_KINDS[best.kind]?.label || "捕捉", x + s + 5, y - s - 2);
+  /*
+   * 与自动关系合并成一条提示：捕捉给的是"点在哪儿"（端点/中点/圆心），
+   * 推理给的是"这条线是什么方向"（水平/竖直/平行…）。两者同时命中时用户要读的是一句话，
+   * 不是两个互相压着的标签（实测两个标记叠在一起会糊成一团）。
+   */
+  const snapLabel = SNAP_KINDS[best.kind]?.label || "捕捉";
+  const inferLabels = (sketchInfer?.symbols || [])
+    .filter((s) => INFER_DIR_TYPES.has(s.kind))
+    .map((s) => s.label);
+  const labelText = [snapLabel, ...inferLabels].filter(Boolean).join(" · ");
+  ctx.fillText(labelText, x + s + 5, y - s - 2);
   ctx.restore();
 }
 
@@ -545,6 +1063,31 @@ function dimPick(p2d) {
   setStats(`已选中${name} #${hit.index + 1} · 改下面的数值，图形会自动变形`);
 }
 
+/**
+ * 尺寸面板底部那行统计。
+ *
+ * 两个口径必须分开写清楚（视觉复核第 1 条第 ② 点）：
+ *   · "本图元尺寸" —— 只数 e === dimEntity 的维度约束；
+ *   · "全草图关系" —— sketch.constraints.length（状态条里的「关系 #N」就是这个数组的下标+1）。
+ * 之前只写"当前约束 N 条"，而且是**渲染那一刻的快照**：加了关系/尺寸之后面板不重画，
+ * 于是面板写 2 条、状态条却在说 #4 冲突 —— 用户看到两个数对不上。
+ */
+function dimPanelCounts() {
+  if (!sketch || dimEntity == null) return { own: 0, all: 0 };
+  const own = sketch.constraints.filter((c) => c.type === "fixed" && c.e === dimEntity).length;
+  return { own, all: sketch.constraints.length };
+}
+
+/** 只更新面板底部的统计行（不重建输入框，避免正在输入时被抢焦点） */
+function refreshDimPanelHint() {
+  const el = $("dimPanelHint");
+  if (!el) return;
+  const { own, all } = dimPanelCounts();
+  const text = `改完自动求解 · 本图元 ${own} 个尺寸 · 全草图关系 ${all} 条`;
+  if (el.textContent !== text) el.textContent = text;
+  el.title = `「全草图关系」= 草图里全部约束（尺寸 + 几何关系）的条数，状态条的「关系 #N」就是这个列表里的第 N 条；「本图元尺寸」只数这个图元的宽/高/半径。`;
+}
+
 function renderDimPanel() {
   const el = $("dimPanel");
   if (!el) return;
@@ -557,8 +1100,9 @@ function renderDimPanel() {
       ? dims.map((d) => `<div class="dp-row"><span class="dp-label">${d.label}</span>` +
           `<input data-dim="${d.k}" type="number" inputmode="decimal" step="0.5" value="${(+d.value).toFixed(2)}"></div>`).join("")
       : `<div class="dp-hint">折线暂时没有可标注的尺寸</div>`) +
-    `<div class="dp-hint">改完自动求解 · 当前约束 ${sketch.constraints.length} 条</div>`;
+    `<div class="dp-hint" id="dimPanelHint"></div>`;
   el.classList.remove("hidden");
+  refreshDimPanelHint();
   for (const inp of el.querySelectorAll("[data-dim]")) {
     inp.onchange = () => applyDim(inp.dataset.dim, parseFloat(inp.value));
   }
@@ -593,7 +1137,7 @@ function applyDim(k, v) {
   redrawSketch();
   renderDimPanel();
   setStats(`已标注 ${dim.label} = ${v}mm · 求解 ${res.iterations} 次迭代 ${ms.toFixed(1)} ms · ` +
-    `约束 ${sketch.constraints.length} 条 · 估算剩余自由度 ${res.dof} · maxErr ${res.maxErr.toExponential(1)}`);
+    `${sketchDofLine()} · maxErr ${res.maxErr.toExponential(1)}`);
 }
 // ---------------------------------------------------------------- 关联 / 链接（拉伸到目标）
 // 场景：两个并排不一样高的拉伸体，把其中一个的面拉到和另一个等高；
@@ -935,6 +1479,7 @@ async function openFile(file) {
         //   commit() 自己会截断 hIndex 之后的历史，不需要另清重做栈。
         commit(name, `STEP 导入 · 面 ${res.faces} · ${volText}`,
           "import", { type: "import", id: reg.id, name });
+        clearCommands();          // 导入即新文档起点：撤销栈不跨文档
         setMode("select");
         refresh({ fit: true });
         setStats(`${name} 已作为设计起点导入 · 实体 ${res.solids} · 面 ${res.faces} · ${volText} · ` +
@@ -1119,9 +1664,12 @@ function renderFeatTree() {
       if (n.dataset.sketch != null) { editSketchOf(+n.dataset.sketch); return; }
       if (n.dataset.i != null) {
         const i = +n.dataset.i;
+        // 跳步先走（jumpToStep 进命令栈）：裸 gotoStep 会让「改参数 → 这里跳步 → 撤销」
+        // 一次吃掉两个用户动作。阵列/镜像行同样要先落位，再打开它的参数面板。
+        jumpToStep(i);
         if (["pattern", "mirror"].includes(history[i]?.op?.type)) { editStep(i); return; }
-        gotoStep(i);
-        // 可改参数的特征直接把属性面板打开（图 2 那种"编辑特征"）
+        // 可改参数的特征直接把属性面板打开（图 2 那种"编辑特征"）。
+        // editStep 内部只在 i > hIndex 时才 gotoStep，上面刚跳过步，这里不会再记一条命令。
         if (history[i].op && EDITABLE[history[i].op.type]) editStep(i);
         void ev;
       }
@@ -1144,8 +1692,10 @@ function startRename(node, i) {
     ftRenaming = null;
     const v = inp.value.trim();
     if (commit && v) {
-      history[i].customName = v;      // 自定义名单独存，别覆盖 label（label 是特征树右侧的参数摘要来源）
-      history[i].label = v;
+      // 换行对象（历史行不可变）；改名也是一条可撤销命令
+      docCommands.run(`把「${featureDisplayName(history[i], i)}」改名为「${v}」`, () => {
+        history = replaceStep(history, i, { customName: v, label: v });   // 自定义名单存，别覆盖参数摘要
+      });
     }
     renderFeatTree();
     renderTree();
@@ -1265,6 +1815,7 @@ function loadProjectData(p, name) {
   if (["fillet", "chamfer", "shell"].includes(mode)) exitEdgeMode();
   closeSaveDialog();
   ({ history, hIndex, shape, refGeoms, rgSeq } = next);
+  clearCommands();            // 换了文档：撤销栈不能跨文档（否则会撤到上一个零件的状态）
   workspaceUI?.setDocumentName(name);
   try { rebuildRefGeoms(); } catch (_) {}
   selectFace(null);
@@ -1419,21 +1970,25 @@ function applyModelScript(script, scriptMode = "replace") {
   }
   scriptUndo = backup;
   $("spUndo").disabled = false;
-  history = next;
-  hIndex = history.length - 1;
-  shape = run.shape;
-  if (scriptMode === "replace") {
-    refGeoms = [];
-    rgSeq = { plane: 0, axis: 0, point: 0, csys: 0 };
-    try { rebuildRefGeoms(); } catch (_) {}
-  }
-  selectFace(null);
-  dim?.hide();
-  viewer.clearHighlight();
-  viewer.clearSketchLines();
-  viewer.setEdgeData([]);
-  refresh({ fit: true });
-  renderTree();
+  // 脚本落笔也是一条撤销命令（追加模式可撤销；整篇替换属文档边界，落完即清栈）
+  docCommands.run(scriptMode === "append" ? "追加脚本特征" : "脚本重建文档", () => {
+    history = next;
+    hIndex = history.length - 1;
+    shape = run.shape;
+    if (scriptMode === "replace") {
+      refGeoms = [];
+      rgSeq = { plane: 0, axis: 0, point: 0, csys: 0 };
+      try { rebuildRefGeoms(); } catch (_) {}
+    }
+    selectFace(null);
+    dim?.hide();
+    viewer.clearHighlight();
+    viewer.clearSketchLines();
+    viewer.setEdgeData([]);
+    refresh({ fit: true });
+    renderTree();
+  });
+  if (scriptMode === "replace") clearCommands();        // 换了整篇文档：不许跨文档撤销
   if (run.name) workspaceUI?.setDocumentName(run.name);
   const sum = summarize(run);
   setStats(`脚本${scriptMode === "append" ? "已追加" : "已重建"} · ${sum.stepCount} 步 · 用时 ${totalMs.toFixed(0)} ms`
@@ -1450,19 +2005,28 @@ function undoScriptRun() {
   else if (mode === "link") exitLinkMode();
   else if (mode === "smartdim") cancelSmartDim();
   const b = scriptUndo;
-  history = b.history;
-  hIndex = b.hIndex;
-  shape = b.shape;
-  refGeoms = b.refGeoms;
-  rgSeq = b.rgSeq;
-  scriptUndo = null;
-  $("spUndo").disabled = true;
-  try { rebuildRefGeoms(); } catch (_) {}
-  selectFace(null);
-  refresh({ fit: true });
-  renderTree();
+  /*
+   * 口径：脚本动作一律走统一命令栈，不许绕过。
+   *   - applyModelScript 的 replace 分支换整篇 → docCommands.clear()（文档边界，跨文档不撤销）；
+   *   - 这里只是**换回上一次运行的结果**，属同文档内的一条动作 → 作为命令入栈。
+   * 原来直接 `history = b.history; hIndex = b.hIndex`，栈里的旧快照仍指着被换掉的那份文档，
+   * 之后撤销/重做会把「另一个文档的中间态」装回来（未实测但路径成立，本轮按统一事务收口）。
+   */
+  docCommands.run("撤销脚本运行", () => {
+    history = b.history;
+    hIndex = b.hIndex;
+    shape = b.shape;
+    refGeoms = b.refGeoms;
+    rgSeq = b.rgSeq;
+    scriptUndo = null;
+    $("spUndo").disabled = true;
+    try { rebuildRefGeoms(); } catch (_) {}
+    selectFace(null);
+    refresh({ fit: true });
+    renderTree();
+  });
   if (b.docName) workspaceUI?.setDocumentName(b.docName);
-  setStats("已撤销上一次脚本运行 · 模型回到运行之前");
+  setStats("已撤销上一次脚本运行 · 模型回到运行之前（可再撤销/重做）");
   return true;
 }
 
@@ -1716,17 +2280,18 @@ function applySmartDim() {
       return;
     }
 
-    // —— 校验通过才真正落笔
-    history[use.i].op = newOp;
-    history[use.i].detail = detailOf(newOp);
-    acceptRebuild(r);
-    shape = r.shape;
-    spPreviewShape = null;
-    spPreviewing = false;
-    selectedFaceId = null; selSnap = null;
-    viewer.clearHighlight();
-    refresh();
-    renderTree();
+    // —— 校验通过才真正落笔（一条撤销命令：设一次距离 = 一步）
+    docCommands.run(`设距离 ${Math.abs(targetSigned).toFixed(2)}mm`, () => {
+      history = replaceStep(history, use.i, { op: newOp, detail: detailOf(newOp) }).slice(0, hIndex + 1);
+      cacheRebuild(history, r);      // r 是用同一份定义算出来的，直接回填，不重算第二遍
+      shape = r.shape;
+      spPreviewShape = null;
+      spPreviewing = false;
+      selectedFaceId = null; selSnap = null;
+      viewer.clearHighlight();
+      refresh();
+      renderTree();
+    });
     const ms = performance.now() - t0;
     spA = { center: iA.center.slice(), normal: iA.normal.slice(), faceId: nA };
     spB = { center: iB.center.slice(), normal: iB.normal.slice(), faceId: nB };
@@ -1949,15 +2514,16 @@ function commitCurvedDim(v) {
   try {
     const { drv, spec, isCyl, newOp } = curvedDimOperation(v);
     const r = rebuild(history, hIndex, { [drv.i]: newOp });
-    history[drv.i].op = newOp;
-    history[drv.i].detail = detailOf(newOp);
-    acceptRebuild(r);
-    shape = r.shape;
-    selectedFaceId = null; selSnap = null; faceClass = null; curvedDriver = null;
-    dim?.hide();
-    viewer.clearHighlight();
-    refresh();
-    renderTree();
+    docCommands.run(`把${spec.kind}改成 ${v.toFixed(2)}mm`, () => {
+      history = replaceStep(history, drv.i, { op: newOp, detail: detailOf(newOp) }).slice(0, hIndex + 1);
+      cacheRebuild(history, r);
+      shape = r.shape;
+      selectedFaceId = null; selSnap = null; faceClass = null; curvedDriver = null;
+      dim?.hide();
+      viewer.clearHighlight();
+      refresh();
+      renderTree();
+    });
     setStats(`已把${spec.kind}改成 ${v.toFixed(2)}${isCyl ? "（直径）" : ""} · ` +
       `重放 ${r.steps} 步 用时 ${(performance.now() - t0).toFixed(0)} ms · 面 ${shape.faces.length}`);
   } catch (e) {
@@ -2956,7 +3522,7 @@ function applyRelation(type) {
     redrawSketch();
     return false;
   }
-  setStats(`已添加「${spec.label || spec.type}」 · 求解 ${res.iterations} 次迭代 · 估算剩余自由度 ${res.dof}`);
+  setStats(`已添加「${spec.label || spec.type}」 · 求解 ${res.iterations} 次迭代 · ${sketchDofLine()}`);
   relReset();
   relHighlight();
   refreshRelPad();
@@ -3105,7 +3671,7 @@ function applySmartSpec(value) {
     redrawSketch();
     return false;
   }
-  setStats(`${spec.label || "已标注"} · 求解 ${res.iterations} 次迭代 · 估算剩余自由度 ${res.dof} · 数值可改`);
+  setStats(`${spec.label || "已标注"} · 求解 ${res.iterations} 次迭代 · ${sketchDofLine()} · 数值可改`);
   smartDimReset();
   smartDimHighlight();
   redrawSketch();
@@ -3205,7 +3771,7 @@ function dimensionTwoPoints(cp) {
   }
   redrawSketch();
   setStats(`已标注两点距离 ${d.toFixed(2)}mm · 求解 ${res.iterations} 次迭代 · ` +
-    `估算剩余自由度 ${res.dof} · maxErr ${res.maxErr.toExponential(1)} · 点数值可改，或继续标下一个`);
+    `${sketchDofLine()} · maxErr ${res.maxErr.toExponential(1)} · 点数值可改，或继续标下一个`);
   dimP1 = null;
 }
 
@@ -3386,15 +3952,17 @@ function selectFace(faceId) {
   if (!info) { selectedFaceId = null; viewer.clearHighlight(); showPicker(null); dim?.hide(); return; }
   selSnap = { normal: new THREE.Vector3(...info.normal), center: info.center.slice() };
   viewer.highlightFace(faceId);
-  showPicker(info);
   // 抽壳模式下没有面信息面板（见 showPicker 的说明），改用状态栏告诉用户选中的是哪个面
   if (mode === "shell") {
     setStats(`已选定开口面 #${String(faceId % 100000).padStart(5, "0")}`
       + `（中心 ${info.center.map((v) => v.toFixed(1)).join(", ")}）· 输入壁厚后点「应用」`);
   }
 
-  // 先判面类型：曲面给"改尺寸"手柄（圆柱改直径、圆角改半径、倒角改距离），
-  // 只有平面才给推拉手柄 —— 对圆柱面做"沿法向平移"是没有意义的
+  /*
+   * 先判面类型**再**弹卡片：关联工具栏是按对象类型过滤的，
+   * 圆柱面要出「改直径 / 同轴孔」，平面才出「推拉 / 草图 / 孔 …」。
+   * 原来 showPicker 在这之前调用，faceClass 还是上一轮的值 —— 圆柱面会错弹成平面卡片。
+   */
   const face = OPS.findFace(shape, faceId);
   faceClass = readCylinderFace(face) || classifyCached(faceId, info.center);
   if (faceClass && faceClass.kind !== "plane" && faceClass.kind !== "unknown") {
@@ -3402,6 +3970,7 @@ function selectFace(faceId) {
     if (drv.length) {
       curvedDriver = drv[0];
       showCurvedDim();
+      showPicker(info);
       setStats(`选中${faceClass.kind === "cylinder" ? "圆柱面" : faceClass.kind === "torus" ? "圆角面" : "倒角面"} · ` +
         `拖动橙色手柄改${curvedDimSpec()?.kind || "尺寸"}（${drv[0].label}）`);
       return;
@@ -3409,9 +3978,11 @@ function selectFace(faceId) {
   }
   if (face?.geomType !== "PLANE") {
     dim?.hide();
+    showPicker(info);
     setStats("这个曲面暂时无法唯一确认尺寸来源，请在历史中编辑原始特征");
     return;
   }
+  showPicker(info);
   // 只有确认的平面才使用普通面推拉。
   if (mode === "select" || mode === "pushpull") showPushPullDim(0);
 }
@@ -3421,6 +3992,207 @@ function isPlanarPushPullFace(base, faceId) {
   if (!base || faceId == null) return false;
   try { return OPS.findFace(base, faceId)?.geomType === "PLANE"; }
   catch (_) { return false; }
+}
+
+// ---------------------------------------------------------------- 集成挂点（给智能草图 / 装配路用）
+/*
+ * 本轮只留挂点、不实现功能。三条约定（改这里的实现前先读）：
+ *
+ *  1. `registerAppMode(name, {enter, exit, label})` —— 注册一个"应用模式"（装配模式用它）。
+ *     调用时机：main.js 初始化完成后 / 任何时刻；重复注册同名会覆盖。
+ *     进入：`enterAppMode("assembly")` → 先调当前模式的 exit，再调新模式的 enter。
+ *     退出：`exitAppMode()` → 调当前模式的 exit。当前模式名在 `state.ui.appModeName`。
+ *     模式自己不负责隐藏任何既有浮层（那是装配路的事），这里只保证钩子被正确调用。
+ *
+ *  2. `onSketchDraftMove(hook)` —— 草图"正在落点"的每一帧回调，返回取消订阅函数。
+ *     调用时机：草图里手指移动更新橡皮筋端点之后、重画覆盖层之前（见 notifySketchDraftMove）。
+ *     入参 `{sketch, p2d, clientX, clientY}`，p2d 是草图 2D 坐标（可能为 null）。
+ *     智能草图路要画的推理符号 / DOF 着色就挂在这里（返回值忽略；异常会被吞掉不打断绘制）。
+ *
+ *  3. `onSketchDraftFinish(hook)` —— 一条折线收尾（finishPolyline / 双击收尾）后回调。
+ *     入参 `{sketch, entity}`，装配路/草图路要补约束推导时可以在这儿接。
+ */
+const _appModes = new Map();
+let _currentAppMode = null;
+
+function registerAppMode(name, handlers = {}) {
+  if (!name) throw new Error("registerAppMode: 需要模式名");
+  _appModes.set(name, { label: handlers.label || name, enter: handlers.enter || (() => {}), exit: handlers.exit || (() => {}) });
+  state.modes.set(name, _appModes.get(name));
+  return name;
+}
+
+function enterAppMode(name) {
+  const next = _appModes.get(name);
+  if (!next) { setStats(`没有注册过应用模式「${name}」`); return false; }
+  if (_currentAppMode) { try { _appModes.get(_currentAppMode)?.exit(); } catch (e) { console.error(e); } }
+  _currentAppMode = name;
+  state.ui.appModeName = name;
+  try { next.enter(); } catch (e) { console.error(e); }
+  return true;
+}
+
+function exitAppMode() {
+  if (!_currentAppMode) return false;
+  const cur = _appModes.get(_currentAppMode);
+  _currentAppMode = null;
+  state.ui.appModeName = null;
+  try { cur?.exit(); } catch (e) { console.error(e); }
+  return true;
+}
+
+const _draftMoveHooks = new Set();
+const _draftFinishHooks = new Set();
+
+function onSketchDraftMove(hook) {
+  if (typeof hook !== "function") return () => {};
+  _draftMoveHooks.add(hook);
+  return () => _draftMoveHooks.delete(hook);
+}
+
+function onSketchDraftFinish(hook) {
+  if (typeof hook !== "function") return () => {};
+  _draftFinishHooks.add(hook);
+  return () => _draftFinishHooks.delete(hook);
+}
+
+function notifySketchDraftMove(p2d, event) {
+  if (!_draftMoveHooks.size || !sketch) return;
+  const payload = { sketch, p2d: p2d || null, clientX: event?.clientX ?? null, clientY: event?.clientY ?? null };
+  for (const fn of _draftMoveHooks) { try { fn(payload); } catch (e) { console.error("onSketchDraftMove", e); } }
+}
+
+function notifySketchDraftFinish(entity) {
+  if (!_draftFinishHooks.size || !sketch) return;
+  for (const fn of _draftFinishHooks) { try { fn({ sketch, entity: entity || null }); } catch (e) { console.error("onSketchDraftFinish", e); } }
+}
+
+/** 手势撤销/重做：草图里撤的是草图轮廓，模型里撤的是历史 */
+function gestureUndoRedo(what) {
+  if (sketch) {
+    if (what === "undo") {
+      const e = sketch.undo();
+      redrawSketch(null);
+      setStats(e ? `两指点了一下：撤销一个草图轮廓（剩 ${sketch.entities.length} 个）` : "草图里没有可撤销的轮廓");
+    } else {
+      setStats("草图里还没有重做（先完成草图，再三指轻点重做历史步骤）");
+    }
+    return;
+  }
+  if (what === "undo") {
+    const before = hIndex;
+    const label = undo();
+    setStats(label ? `两指点了一下：撤销「${label}」（三指重做）`
+      : before === hIndex ? "两指点了一下：已经没有可撤销的步骤" : "两指点了一下：撤销一步（三指重做）");
+  } else {
+    const before = hIndex;
+    const label = redo();
+    setStats(label ? `三指点了一下：重做「${label}」`
+      : before === hIndex ? "三指点了一下：没有可重做的步骤" : "三指点了一下：重做一步");
+  }
+}
+
+/*
+ * 草图里「双击空白 = 完成当前折线」。
+ * 必须挂在 pointerdown（capture）上，不能挂在 touchend/双击手势里：
+ * 触摸的事件顺序是 pointerup → touchend，而落点是 camera.onDragEnd → viewer._tap → onPick 那条链，
+ * 挂晚了这一次点击已经变成一个新顶点。所以在第二次落指时就把折线收尾，并吞掉这一次拾取。
+ */
+let _dblTap = { t: 0, x: 0, y: 0 };
+let _swallowTapUntil = 0;
+/*
+ * 草图里「双击空白 = 完成当前折线」。
+ *
+ * 必须挂在 pointerdown（capture）上，不能挂在 touchend/双击手势里：
+ * 触摸的事件顺序是 pointerup → touchend，而落点是 camera.onDragEnd → viewer._tap → onPick 那条链，
+ * 挂晚了这一次点击已经变成一个新顶点/新一条线。
+ *
+ * 也不能只在"有草稿"时才响应 —— 实测（见报告 G5）：一条线画完后，第二次点击落在**端点附近**
+ * 会被 lineTap 当成"接着画"，把刚画好的线重新打开成草稿。双击在这里的语义就是
+ * "到此为止，不要再接"：第二次落指一律吞掉，有草稿就收尾，没草稿就什么都不做。
+ */
+canvas.addEventListener("pointerdown", (e) => {
+  if (!sketch) { _dblTap.t = 0; return; }
+  if (e.pointerType === "pen" || e.button !== 0) return;
+  const t = performance.now();
+  const near = Math.hypot(e.clientX - _dblTap.x, e.clientY - _dblTap.y) < 24;
+  if (_dblTap.t && t - _dblTap.t < 320 && near) {
+    _dblTap.t = 0;
+    _swallowTapUntil = t + 600;                 // 吞掉这一次落点（onPick 开头会看这个时间戳）
+    const d = sketch.draft ? finishPolylineWithInfer() : null;
+    redrawSketch(null);
+    notifySketchDraftFinish(d);
+    setStats(d
+      ? `双击收尾：折线已收尾（${d.pts.length} 个顶点）`
+      : "双击：结束当前折线（没有正在画的折线，也不会接着上一条画）");
+    return;
+  }
+  _dblTap = { t, x: e.clientX, y: e.clientY };
+}, { capture: true });
+
+// ---------------------------------------------------------------- 语境工具栏（关联工具栏）
+/*
+ * 对标两家的同一件事：
+ *   · SolidWorks 的「关联工具栏」——在图形区选中项目时，浮出一组与当前选择相关、常跑的操作；
+ *   · Shapr3D 的「自适应界面」——选中即命令，选面出偏移/拉伸，选轮廓出拉伸，选两个面出对齐/距离。
+ * 本项目的落点是**复用已有的 #picker 面卡**当容器（不新开浮层，避免"两个浮层抢右上命令位"的老坑），
+ * 按钮清单由 src/ui-context.js 的纯函数按对象类型给出，每个按钮在 runContextAction() 里有真实实现。
+ */
+const ctxSel = { kind: null, faceId: null, faces: [], edge: null, multi: false, contour: null };
+state.ui.selFaces = [];
+state.ui.contextKind = null;
+
+/** 语境卡片统一出口：填内容 + 贴到锚点（锚点是世界坐标，相机转动后 UI 层重新投影） */
+function paintContextCard({ kind, tag, sub, actions, value, note, debug, headline, world }) {
+  const el = $("picker");
+  if (!el) return;
+  ctxSel.kind = kind;
+  if (typeof state !== "undefined" && state?.ui) state.ui.contextKind = kind;
+  el.classList.remove("hidden");
+  const r = renderContextToolbar(el, { kind, headline, tag, sub, actions, value, note, debug });
+  /*
+   * 按钮的接线：
+   *  · 带数值的那个按钮（推拉 / 改直径）必须从**卡片里的 #dist** 读值 ——
+   *    独立 VM 夹具只给了 el.querySelector("#dist")，全局 $("dist") 在那里是另一个对象。
+   *  · 其余按钮统一走 runContextAction，保证"按钮文案 → 真实动作"只有一份映射。
+   */
+  const input = el.querySelector?.("#dist") || null;
+  const applyBtn = el.querySelector?.("[data-act=apply]") || null;
+  if (applyBtn) {
+    const key = applyBtn.dataset?.ctx || "pushpull";
+    applyBtn.onclick = () => {
+      const v = parseFloat(input?.value);
+      if (!isFinite(v)) { setStats("请先填一个数字"); return; }
+      if (key === "diameter") commitCurvedDim(v);
+      else applyPushPull(v);
+    };
+  }
+  for (const b of el.querySelectorAll?.("[data-ctx]") || []) {
+    if (b === applyBtn) continue;
+    b.onclick = () => runContextAction(b.dataset.ctx);
+  }
+  pickerAnchor = world || pickerAnchor;
+  let pt = null;
+  try { if (world && typeof worldToScreen === "function") pt = worldToScreen(world); } catch (_) { pt = null; }
+  if (typeof workspaceUI !== "undefined" && workspaceUI?.placePickerAt) workspaceUI.placePickerAt(pt, pickerAnchor);
+  return r;
+}
+
+function hideContextCard() {
+  const el = $("picker");
+  try { el?.classList.add("hidden"); } catch (_) {}
+  pickerAnchor = null;
+  ctxSel.kind = null;
+  ctxSel.edge = null;
+  state.ui.contextKind = null;
+}
+
+/** 当前面应该出哪一类卡片 */
+function faceContextKind() {
+  const k = faceClass?.kind;
+  if (k === "cylinder") return "face-cylinder";
+  if (k && k !== "plane" && k !== "unknown") return "face-curved";
+  return "face-plane";
 }
 
 function showPicker(info) {
@@ -3433,45 +4205,324 @@ function showPicker(info) {
    * 这些命令模式下不再弹面信息面板：面已经被高亮，选中的是哪个面走状态栏文字。
    */
   const commandMode = ["fillet", "chamfer", "shell"].includes(mode);
-  if (!info || commandMode) { el.classList.add("hidden"); pickerAnchor = null; return; }
-  el.classList.remove("hidden");
+  if (!info || commandMode) { hideContextCard(); return; }
   const n = info.normal.map((v) => v.toFixed(2)).join(", ");
   const c = info.center.map((v) => v.toFixed(1)).join(", ");
-  const planar = isPlanarPushPullFace(shape, info.faceId);
+  // 平面优先按**几何**判（内核说它是 PLANE 才给推拉），曲面再按 faceClass 细分
+  const kind = isPlanarPushPullFace(shape, info.faceId)
+    ? "face-plane"
+    : (typeof faceContextKind === "function" ? faceContextKind() : "face-curved");
   const tag = `#${(info.faceId % 100000).toString().padStart(5, "0")}`;
-  /*
-   * 选中面 = 贴着这个面浮出的小卡（推拉数值 + 应用 + 两个快捷动作）。
-   * 法向/中心这类调试信息折到最后一行小字里 —— 用户要的是「就地改这个面」，
-   * 不是读一串坐标。卡片位置由 workspace-ui 按面的屏幕投影 + 避让算（不盖尺寸手柄）。
-   */
-  el.innerHTML = planar
-    ? `<div class="pk-head"><span>面 <b>${tag}</b></span><span class="pk-sub">平面</span></div>
-    <div class="pk-row">
-      <input id="dist" type="number" inputmode="decimal" step="0.5" value="5" />
-      <button data-act="apply" type="button">推拉</button>
-    </div>
-    <div class="pk-quick">
-      <button type="button" data-pick="sketch">草图</button>
-      <button type="button" data-pick="hole">孔</button>
-    </div>
-    <div class="pk-debug">法向 (${n}) · 中心 (${c})</div>`
-    : `<div class="pk-head"><span>面 <b>${tag}</b></span><span class="pk-sub">曲面</span></div>
-    <div class="muted" style="margin-top:6px">曲面尺寸请用橙色手柄；未显示手柄时，请在历史中编辑原始特征。</div>
-    <div class="pk-debug">法向 (${n}) · 中心 (${c})</div>`;
-  if (planar) {
-    // 注意顺序：apply 必须最后绑定（旧回归在假 DOM 里把三个按钮当成同一个对象）
-    el.querySelector('[data-pick="sketch"]').onclick = () => document.querySelector('[data-act="sketch"]')?.click();
-    el.querySelector('[data-pick="hole"]').onclick = () => document.querySelector('[data-act="hole"]')?.click();
-    el.querySelector("[data-act=apply]").onclick = () => {
-      const v = parseFloat(el.querySelector("#dist").value);
-      if (isFinite(v)) applyPushPull(v);
-    };
+  const planar = isPlanarPushPullFace(shape, info.faceId);
+  if (typeof renderContextToolbar !== "function") {
+    /*
+     * 独立 VM 回归夹具（regression-surface-interactions.mjs）把 showPicker 整段抠进
+     * 没有 import 的沙箱里跑，那里既没有 ui-context.js 也没有 state.js。
+     * 这条兜底分支只负责"老读者关心的两件事"：曲面不给推拉按钮（提示用橙色手柄）、
+     * 平面给数值框 + 应用按钮且按钮真的提交。产品路径永远走下面那条。
+     */
+    el.classList.remove("hidden");
+    el.innerHTML = kind === "face-plane"
+      ? `<div class="pk-head"><span>面 <b>${tag}</b></span><span class="pk-sub">平面</span></div>`
+        + `<div class="pk-row"><input id="dist" type="number" step="0.5" value="5" /><button data-act="apply" type="button">推拉</button></div>`
+      : `<div class="pk-head"><span>面 <b>${tag}</b></span><span class="pk-sub">曲面</span></div>`
+        + `<div class="muted">曲面尺寸请用橙色手柄；未显示手柄时，请在历史中编辑原始特征。</div>`;
+    const fbApply = el.querySelector("[data-act=apply]");
+    if (fbApply) {
+      fbApply.onclick = () => {
+        const v = parseFloat(el.querySelector("#dist").value);
+        if (isFinite(v)) applyPushPull(v);
+      };
+    }
+    pickerAnchor = [info.center[0], info.center[1], info.center[2]];
+    return;
   }
-  // 面卡跟着「这个面的屏幕投影」走；相机转动/手势结束后 UI 层会重新贴回来
-  pickerAnchor = [info.center[0], info.center[1], info.center[2]];
-  let pt = null;
-  try { if (typeof worldToScreen === "function") pt = worldToScreen(info.center); } catch (_) { pt = null; }
-  if (typeof workspaceUI !== "undefined" && workspaceUI && workspaceUI.placePickerAt) workspaceUI.placePickerAt(pt, pickerAnchor);
+  const actions = contextActions(kind, { multi: ctxSel.multi });
+  let value = null, note = "";
+  if (kind === "face-plane") {
+    value = parseFloat($("dist")?.value) || 5;
+  } else if (kind === "face-cylinder") {
+    value = +(faceClass?.radius ? faceClass.radius * 2 : 0).toFixed(2);
+    note = curvedDriver
+      ? `尺寸来源：${curvedDriver.label}（改的是特征参数，会重放下游）`
+      : "这个圆柱面没找到可改的驱动特征；同轴孔仍然可用";
+  } else if (kind === "face-curved") {
+    note = "曲面尺寸请用橙色手柄；未显示手柄时，请在历史中编辑原始特征。";
+  }
+  if (kind === "face-plane" && !note) note = "拖面心那个橙色手柄也能推拉。";
+  paintContextCard({
+    kind, tag,
+    headline: kind.startsWith("face-") ? "面" : KIND_TITLE[kind],
+    sub: KIND_TITLE[kind] || (planar ? "平面" : "曲面"),
+    actions: kind === "face-plane" && !planar ? actions.filter((a) => a.key !== "pushpull") : actions,
+    value, note,
+    // 法向/中心属于工程师信息：平板卡片上只留「这个面能干什么」，坐标写进状态栏工具提示里
+    debug: "",
+    world: [info.center[0], info.center[1], info.center[2]],
+  });
+  // 归一化后的法向/中心不进卡片（平板上一屏只放得下"能做什么"），挂成原生长按提示
+  if (el) el.title = `法向 (${n}) · 中心 (${c})`;
+}
+
+/** 棱边被点中时出「圆角 / 倒角」 */
+function showEdgeContext(edge) {
+  if (!edge) return;
+  const mid = edge.mid || null;
+  const soft = String(edge.hash ?? 0).slice(-5).padStart(5, "0");
+  paintContextCard({
+    kind: "edge",
+    headline: "选中",
+    tag: `#${soft}`,
+    sub: "棱边",
+    actions: contextActions("edge"),
+    note: "点「圆角」或「倒角」直接进命令，这条边已选中。",
+    debug: "",
+    world: mid,
+  });
+}
+
+/** 草图里选中闭合轮廓时出「拉伸 / 旋转 / 扫掠」 */
+function showProfileContext(world = null) {
+  if (!sketch) return;
+  const count = sketch.selected?.length ? sketch.contourCount : sketch.entities.length;
+  paintContextCard({
+    kind: "profile",
+    headline: "草图",
+    tag: `${count} 个轮廓`,
+    sub: "轮廓",
+    actions: contextActions("profile", { count }),
+    note: "选中的轮廓会参与拉伸/旋转/扫掠；不选就是全部轮廓。",
+    world,
+  });
+}
+
+/** 两个面被选中时出「距离 / 智能尺寸」 */
+function showPairContext() {
+  const ids = ctxSel.faces;
+  if (ids.length < 2) return;
+  const a = OPS.faceInfo(shape, ids[0]);
+  const b = OPS.faceInfo(shape, ids[1]);
+  if (!a || !b) return;
+  const d = faceDistance(
+    { center: a.center, normal: a.normal },
+    { center: b.center, normal: b.normal },
+  );
+  const mid = [0, 1, 2].map((i) => (a.center[i] + b.center[i]) / 2);
+  paintContextCard({
+    kind: "pair",
+    headline: "选中",
+    tag: `${ids.length} 个面`,
+    sub: "两面",
+    actions: contextActions("pair"),
+    note: `两面垂直距离 ${Math.abs(d).toFixed(2)} mm`,
+    debug: "",
+    world: mid,
+  });
+}
+
+/** 语境按钮的统一执行入口（data-ctx 的 key 一一对应） */
+function runContextAction(key) {
+  switch (key) {
+    case "pushpull": {
+      const v = parseFloat($("dist")?.value);
+      if (isFinite(v)) applyPushPull(v);
+      break;
+    }
+    case "diameter": {
+      const v = parseFloat($("dist")?.value);
+      if (!isFinite(v) || v <= 0) { setStats("直径要填一个正数"); break; }
+      commitCurvedDim(v);
+      break;
+    }
+    case "sketch": document.querySelector('[data-act="sketch"]')?.click(); break;
+    case "hole": document.querySelector('[data-act="hole"]')?.click(); break;
+    case "offsetFace": document.querySelector('[data-act="offsetFace"]')?.click(); break;
+    case "filletEdges": {
+      const fid = selectedFaceId;                 // enterEdgeMode 会清空选择，先记住是哪个面
+      enterEdgeMode("fillet");
+      const n = preselectFaceEdges(fid);
+      setStats(n
+        ? `已选中这个面的 ${n} 条棱边并进入圆角 · 拖橙色手柄或输数值`
+        : "圆角模式 · 在模型上点选棱边（这个面上没找到可倒的边）");
+      break;
+    }
+    case "multi": {
+      ctxSel.multi = !ctxSel.multi;
+      if (!ctxSel.multi) ctxSel.faces = [];
+      setStats(ctxSel.multi
+        ? "加选已开 · 再点一个面测两者距离（点「退出加选」结束）"
+        : "已退出加选");
+      if (selectedFaceId != null) { const i = OPS.faceInfo(shape, selectedFaceId); if (i) showPicker(i); }
+      break;
+    }
+    case "coaxHole": coaxialHole(); break;
+    case "fillet": armEdgeAndRun("fillet"); break;
+    case "chamfer": armEdgeAndRun("chamfer"); break;
+    case "extrude": finishSketch(); applyExtrude(1); break;
+    case "revolve": finishSketch(); applyRevolve(); break;
+    case "sweep": finishSketch(); applySweep(); break;
+    case "finishSketch": finishSketch(); break;
+    case "distance": {
+      if (ctxSel.faces.length >= 2) {
+        const a = OPS.faceInfo(shape, ctxSel.faces[0]);
+        const b = OPS.faceInfo(shape, ctxSel.faces[1]);
+        if (a && b) {
+          const d = faceDistance({ center: a.center, normal: a.normal }, { center: b.center, normal: b.normal });
+          setStats(`两面垂直距离 ${Math.abs(d).toFixed(3)} mm（模型未改动）`);
+        }
+      }
+      break;
+    }
+    case "smartdim": {
+      const ids = ctxSel.faces.slice(0, 2);
+      if (ids.length < 2) { setStats("先加选两个面"); break; }
+      enterSmartDimMode();
+      smartDimPick(ids[0]);
+      smartDimPick(ids[1]);
+      break;
+    }
+    default:
+      setStats(`这个语境动作还没有实现：${key}`);
+  }
+}
+
+/** 按形状缓存边的离散点（select 模式下点棱边才需要；形状一变就失效） */
+let _edgeSetCache = { shape: null, sets: null };
+function edgeSetsCached() {
+  if (_edgeSetCache.shape === shape && _edgeSetCache.sets) return _edgeSetCache.sets;
+  let sets = [];
+  try { sets = OPS.edgePointSets(shape, 10) || []; } catch (_) { sets = []; }
+  _edgeSetCache = { shape, sets };
+  try { viewer.setEdgeData(sets); } catch (_) {}
+  return sets;
+}
+
+/** 选中模式下靠棱边点一下 → 返回最近的边（只在 10px 内才算，避免抢走小面的点选） */
+function pickEdgeForContext(x, y) {
+  if (!shape) return null;
+  try {
+    edgeSetsCached();
+    return viewer.pickEdgeAt(x, y, 10) || null;
+  } catch (_) { return null; }
+}
+
+/** 点「圆角/倒角」：先把这条边塞进选择，再进命令 */
+function armEdgeAndRun(kind) {
+  const e = ctxSel.edge;
+  if (!e) { enterEdgeMode(kind); return; }
+  enterEdgeMode(kind);
+  toggleEdge(e);
+}
+
+/**
+ * 这个面的棱边塞进圆角选择。
+ * 几何判据：边的采样点落在这个面的三角网格上（距离 < 0.2mm）就算它的边。
+ * 不用「面 id → 边」的拓扑查询，因为内核绑定里没有带面归属的边表，而网格是现成的。
+ */
+function preselectFaceEdges(faceId) {
+  if (faceId == null || !shape || !viewer.meshData) return 0;
+  try {
+    const md = viewer.meshData;
+    const g = md.faceGroups?.find((x) => x.faceId === faceId);
+    if (!g) return 0;
+    const tris = [];
+    for (let i = 0; i < g.count; i++) {
+      const t = (g.start + i) * 3;
+      const tri = [];
+      for (let k = 0; k < 3; k++) {
+        const vi = md.triangles[t + k] * 3;
+        tri.push([md.vertices[vi], md.vertices[vi + 1], md.vertices[vi + 2]]);
+      }
+      tris.push(tri);
+    }
+    const sets = edgeSetsCached();
+    const on = [];
+    for (const s of sets) {
+      if (!s.mid) continue;
+      // 边中点 + 两个四分点都在面上（或贴面）才算
+      const probes = [s.pts[Math.floor(s.pts.length / 2)], s.pts[Math.floor(s.pts.length / 4)],
+        s.pts[Math.floor((s.pts.length * 3) / 4)]].filter(Boolean);
+      if (!probes.length) continue;
+      if (probes.every((p) => triDistance(p, tris).d < 0.2)) on.push(s);
+    }
+    if (!on.length) return 0;
+    edgeSel = on;
+    viewer.highlightEdges(edgeSel);
+    return on.length;
+  } catch (_) { return 0; }
+}
+
+/** 点到三角形集合的最近距离（只用来判「这条边在这个面上」，不需要精确算法） */
+function triDistance(p, tris) {
+  let best = Infinity;
+  for (const t of tris) {
+    const d = pointTriDist(p, t[0], t[1], t[2]);
+    if (d < best) best = d;
+    if (best < 1e-4) break;
+  }
+  return { d: best };
+}
+
+function pointTriDist(p, a, b, c) {
+  // Ericson《Real-Time Collision Detection》5.1.5 的最近点算法
+  const sub = (u, v) => [u[0] - v[0], u[1] - v[1], u[2] - v[2]];
+  const dot = (u, v) => u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+  const ab = sub(b, a), ac = sub(c, a), ap = sub(p, a);
+  const d1 = dot(ab, ap), d2 = dot(ac, ap);
+  let q;
+  if (d1 <= 0 && d2 <= 0) q = a;
+  else {
+    const bp = sub(p, b), d3 = dot(ab, bp), d4 = dot(ac, bp);
+    if (d3 >= 0 && d4 <= d3) q = b;
+    else {
+      const vc = d1 * d4 - d3 * d2;
+      if (vc <= 0 && d1 >= 0 && d3 <= 0) {
+        const v = d1 / (d1 - d3);
+        q = [a[0] + ab[0] * v, a[1] + ab[1] * v, a[2] + ab[2] * v];
+      } else {
+        const cp = sub(p, c), d5 = dot(ab, cp), d6 = dot(ac, cp);
+        if (d6 >= 0 && d5 <= d6) q = c;
+        else {
+          const vb = d5 * d2 - d1 * d6;
+          if (vb <= 0 && d2 >= 0 && d6 <= 0) {
+            const w = d2 / (d2 - d6);
+            q = [a[0] + ac[0] * w, a[1] + ac[1] * w, a[2] + ac[2] * w];
+          } else {
+            const va = d3 * d6 - d5 * d4;
+            if (va <= 0 && (d4 - d3) >= 0 && (d5 - d6) >= 0) {
+              const w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+              q = [b[0] + (c[0] - b[0]) * w, b[1] + (c[1] - b[1]) * w, b[2] + (c[2] - b[2]) * w];
+            } else {
+              const den = 1 / (va + vb + vc);
+              const v = vb * den, w = vc * den;
+              q = [a[0] + ab[0] * v + ac[0] * w, a[1] + ab[1] * v + ac[1] * w, a[2] + ab[2] * v + ac[2] * w];
+            }
+          }
+        }
+      }
+    }
+  }
+  return Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]);
+}
+
+/** 同轴孔：沿选中圆柱面的轴线，在端面上打孔（孔心落到轴线上，方向 = 轴向） */
+function coaxialHole() {
+  const fc = faceClass;
+  if (!fc || fc.kind !== "cylinder" || !fc.axis) {
+    setStats("同轴孔要先选一个圆柱面（孔壁或圆柱侧面）");
+    return;
+  }
+  const axis = fc.axis.map((v) => +v.toFixed(6));
+  const p0 = fc.ends?.[0] || fc.axisPoint;
+  if (!p0) { setStats("读不到这个圆柱面的轴线端点，换一个面试试"); return; }
+  // 端面法向朝外 = 轴向（正负都行，通孔对称；盲孔再由用户在面板里改）
+  closeFeaturePads();
+  holeSel = { at: p0.map((v) => +v.toFixed(4)), normal: axis };
+  const pad = $("holePad");
+  if (pad) pad.classList.remove("hidden");
+  updateHoleHint();
+  setStats(`同轴孔 · 孔心落在轴线上 (${holeSel.at.map((v) => v.toFixed(1)).join(", ")})`
+    + ` · Ø 与孔型在面板里填，点「应用」`);
 }
 
 /**
@@ -3550,14 +4601,26 @@ function commitPushPull(base, faceId, dist, extra = null) {
 
   // ★ 同一个面上连续推拉 = 同一个特征被改到新深度，不该多出一个特征。
   //   拉 10 再拉 -5，用户想要的是「一个 5mm 的特征」，不是「拉10 + 拉-5」两步。
+  //   但「改深度」仍然是一条用户动作：必须走统一命令栈 + 不可变换行。
+  //   就地写 history[hIndex].op/.detail/.shape 时撤销没有这一笔快照，undo 会落到
+  //   gotoStep(hIndex-1)，把**原来那次推拉整个撤掉**（独立复核实测：dist 11 → 5，
+  //   且它上一条参数编辑命令撤销时会连带吃掉合并）。历史行不可变是 param-edit.js
+  //   文件头的第 1 条不变量，这里没有例外。
   const prev = history[hIndex];
   if (sameFaceAsPrevPushPull(prev, before)) {
     const oldDist = prev.op.dist;
     const merged = { ...prev.op, dist: oldDist + dist };
-    prev.op = merged;
-    prev.detail = detailOf(merged);
-    prev.shape = shape;                // 当前实体就是这个特征的新结果
-    renderTree();
+    // 零距离（OPS.pushPullFace 对 |d|<1e-6 直接返回原实体）= 又点了一下，不该占撤销步
+    if (Math.abs(merged.dist - oldDist) < 1e-6) {
+      setStats(`同一个面推拉 ${dist.toFixed(2)}mm 没有改变深度（仍是 ${oldDist.toFixed(1)}mm）· 没有产生修改，不占撤销步`);
+      return;
+    }
+    docCommands.run(`把「${featureDisplayName(prev, hIndex)}」合并到 ${merged.dist.toFixed(1)}mm`, () => {
+      history = replaceStep(history, hIndex, { op: merged, detail: detailOf(merged), shape: next })
+        .slice(0, hIndex + 1);          // 回滚位置改行要截断过期重做分支（与 commitStepOp 同口径）
+      markSnapshot(history[hIndex]);    // 新行 + 新实体：补快照标记，下一次改参数才能增量重放
+      renderTree();
+    });
     setStats(`同一个面继续推拉 → 与上一步合并成同一个特征：${oldDist.toFixed(1)} + ${dist.toFixed(1)} = ` +
       `${merged.dist.toFixed(1)}mm（没有新增特征）· 用时 ${ms.toFixed(0)} ms · ` + $("stats").textContent);
     return;
@@ -3621,6 +4684,13 @@ function beginSketch(session) {
   drawing = null;
   sketchTool = "select";
   snap.clear(); snapGuides = [];       // 新草图从干净的捕捉状态开始
+  // 智能草图：新会话从干净的推理/分析状态开始（缓存必须失效，否则会拿上一条草图的结论）
+  sketchInfer = null;
+  sketchInferPending = [];
+  _analysisCache = null;
+  _analysisSig = "";
+  _conflictNoticeSig = "";
+  ensureSketchStateUI();
   syncSketchToolUI();
   setSketchUI(true);
   dim?.hide();                  // 必须收起尺寸手柄，否则它会挡住画布的触摸
@@ -3629,6 +4699,7 @@ function beginSketch(session) {
   showPicker(null);
   viewer.setSketchLines(sketch.toLines(), null);
   faceSketchPlane();
+  updateSketchStateUI();               // 状态条立刻显示这张草图的定义状态
   setStats(`草图模式（${sketch.label}）· 拖动绘制矩形/圆，点「完成」拉伸`);
 }
 
@@ -3662,6 +4733,12 @@ function exitSketch() {
   sketch = null;
   drawing = null;
   awaitingExtrude = false;
+  sketchInfer = null;
+  sketchInferPending = [];
+  _analysisCache = null;
+  _analysisSig = "";
+  _conflictNoticeSig = "";
+  $("sketchState")?.classList.add("hidden");
   viewer.clearPreviewWire();                          // 清掉黄色预览线框
   snap.clear(); snapGuides = []; drawSnapOverlay();   // 清掉捕捉标记，别留在屏幕上
   dimEntity = null;
@@ -3696,38 +4773,89 @@ function faceSketchPlane() {
 }
 
 function syncSketchToolUI() {
-  for (const b of document.querySelectorAll("#sketchbar button")) {
+  /*
+   * 必须**全文档**查 `[data-sact]`，不能只在 `#sketchbar` 里找：
+   * 平板外壳（workspace-ui）把草图条里的真实按钮**搬进了左缘工具坞 / 组弹格 / 全部功能**，
+   * 它们已经不在 #sketchbar 的子树里了。只在 #sketchbar 里查 → 一个都没匹配到，
+   * 用户在坞里点「直线」，高亮的却还是「选择」（实测复现，本轮修）。
+   * 同一个按钮可能同时在坞和「全部功能」里各有一份，全部同步。
+   */
+  for (const b of document.querySelectorAll("button[data-sact]")) {
     if (["rect", "circle", "line", "dim", "ref", "offset"].includes(b.dataset.sact)) {
       b.classList.toggle("on", b.dataset.sact === sketchTool);
     }
     if (b.dataset.sact === "snap") b.classList.toggle("on", snap.enabled);
   }
+  /*
+   * 草图坞里「选择」是 data-act（同一个按钮在建模模式也叫选择），它由 setMode 管高亮。
+   * 草图里切到直线后 setMode 不会跑，于是「选择」和「直线」会同时亮着（实测复现）。
+   * 草图会话里这个按钮的含义是 sketchTool=select，所以高亮改由这里统一裁决。
+   */
+  const selBtn = document.querySelector('button[data-act="select"]');
+  if (selBtn && sketch) selBtn.classList.toggle("on", sketchTool === "select");
 }
 
 // 直线工具的橡皮筋：手指在画布上移动（但没在拖动旋转）时更新光标点
 // 节流到 ~30fps：每次移动都要投影一遍所有捕捉候选点，平板上太密会拖慢渲染
 let _snapMoveTs = 0;
 canvas.addEventListener("pointermove", (e) => {
-  if (mode !== "sketch" || sketchTool !== "line" || !sketch?.draft) return;
+  // 判「在不在草图」只认 sketch：草图里点一下「选择」会把 mode 改成 select（历史坑）
+  if (!sketch || sketchTool !== "line" || !sketch.draft) return;
   if (viewer.cam.pointers.size > 0) return;      // 正在旋转相机时不画
   const now = performance.now();
   if (now - _snapMoveTs < 33) return;
   _snapMoveTs = now;
-  const p = updateSnap(e.clientX, e.clientY);
-  if (p) { sketch._cursor = p; redrawSketch(); }
+  const t0 = performance.now();
+  const p = updateSnap(e.clientX, e.clientY);    // 内部含自动关系推理（inferAtCursor）
+  if (!p) return;
+  sketch._cursor = p;
+  notifySketchDraftMove(p, e);
+  redrawSketch();
+  // 帧耗时打点：推理 + 预览重画（验收脚本从 __padcad.sketchPerf 读，目标 < 8ms）
+  perfSample({ inferMs: _inferMs, drawMs: performance.now() - t0, totalMs: performance.now() - t0 });
 });
+
+/** 记一帧耗时（只留最近 80 帧，避免长会话吃内存） */
+function perfSample(sample) {
+  _perfSamples.push(sample);
+  if (_perfSamples.length > 80) _perfSamples.shift();
+}
+
+/** 帧耗时统计（中位数 / p95 / 最大值，全部来自真实 pointermove） */
+function perfSummary() {
+  if (!_perfSamples.length) return { n: 0, median: 0, p95: 0, max: 0, lastInferMs: 0, lastDrawMs: 0, analysisMs: +_analysisMs.toFixed(3) };
+  const arr = _perfSamples.map((s) => s.totalMs).sort((a, b) => a - b);
+  const pick = (q) => arr[Math.min(arr.length - 1, Math.max(0, Math.round((arr.length - 1) * q)))];
+  const last = _perfSamples[_perfSamples.length - 1];
+  return {
+    n: arr.length,
+    median: +pick(0.5).toFixed(3),
+    p95: +pick(0.95).toFixed(3),
+    max: +arr[arr.length - 1].toFixed(3),
+    lastInferMs: +(last.inferMs || 0).toFixed(3),
+    lastDrawMs: +(last.drawMs || 0).toFixed(3),
+    analysisMs: +_analysisMs.toFixed(3),
+  };
+}
 
 function redrawSketch(preview = null) {
   if (!sketch) return;
   // 被选中的轮廓用黄色单独画出来（SolidWorks 里选中的轮廓也是变色高亮）
   const hl = sketch.linesOf(sketch.selected);
   if (sketchTool === "line") {
-    viewer.setSketchLines(sketch.toLinesWithDraft(sketch._cursor || null), hl);
+    /*
+     * 草稿单独走「预览」槽（实线琥珀色）：它还没提交，不能和已完成轮廓一个样子。
+     * 推理虚线在覆盖层上另画（侧移 7px），于是"实线=正在画的、虚线=推理方向"一眼分得开。
+     */
+    const draft = sketch.draftLines(sketch._cursor || null);
+    viewer.setSketchLines(sketch.toLines(), draft && draft.length ? draft : (hl && hl.length ? hl : null));
   } else {
     viewer.setSketchLines(sketch.toLines(), hl && hl.length ? hl : (preview ? sketch.lineOf(preview) : null));
   }
   // 尺寸标注画在覆盖层上，几何一变就得跟着重画（否则标注会停在旧位置）
   drawSnapOverlay();
+  // 状态条跟着几何/约束走（analyzeSketch 有签名缓存，且拖动中复用旧结果，见 sketchAnalysis）
+  updateSketchStateUI();
 }
 
 /** 直线工具：点一下落一个点 */
@@ -3764,15 +4892,31 @@ function lineEndpointNear(p, tol = LINE_CHAIN_TOL) {
 
 function lineTap(p) {
   if (!sketch) return;
+  /*
+   * 捕捉命中时把「重合」也写成约束（SolidWorks 同）：
+   * 只吸附不写关系的话，屏幕上那两条线是"看起来接上了"，一拖端点接缝就散开。
+   * 这是"捕捉点优先"的另一半 —— 坐标用捕捉值，关系也记下来。
+   */
+  const snapHit = (autoRelate && p.snapped && snap.best) ? nearestRefPoint({ x: p.x, y: p.y }, 1e-6) : null;
+  // nearestRefPoint 返回的是候选点 {p(坐标), kind, ref:{e,p}} —— 约束要的是那层 ref
+  const snapRef = snapHit?.ref && snapHit.ref.e != null ? { e: snapHit.ref.e, p: snapHit.ref.p } : null;
+  const snapCoincident = (ref, draftIndex) => ({
+    type: "coincident", priority: 100, confidence: 1,
+    spec: { type: "coincident", a: { draft: draftIndex }, b: { e: ref.e, p: ref.p } },
+  });
   if (!sketch.draft) {
     // 起笔前先看有没有贴着某个已有端点：贴着就把那条线**接过来**继续画，
     // 不然多边形永远闭不上（两点一条线的新规则会把连续折线砍掉）
     const near = lineEndpointNear(p);
+    sketchInferPending = [];              // 新一条线：之前攒的推理作废
     if (near) {
       sketch.chainFromEndpoint(near.e, near.fromEnd);
+      invalidateSketchAnalysis();
       setStats("从这条线的端点接着画 · 点回起点可闭合成多边形");
     } else {
       sketch.beginPolyline(p);
+      // 起笔就落在已有特征点上 → 记一条重合，收尾时一起写进去
+      if (snapRef) sketchInferPending.push({ seg: 0, idxA: 0, idxB: 0, relations: [snapCoincident(snapRef, 0)] });
       setStats("直线：再点一下确定这条线的终点（贴着端点起笔可以接着画）");
     }
     redrawSketch();
@@ -3781,10 +4925,29 @@ function lineTap(p) {
   const d0 = sketch.draft;
   const last = d0.pts[d0.pts.length - 1];
   const nearLast = Math.hypot(p.x - last[0], p.y - last[1]) < LINE_CHAIN_TOL;
+  /*
+   * 这个点会落在下标 ptIndex 上（pts.length 是它之前已有的点数）。
+   * 它对应的"这一段"是 ptIndex-1 → ptIndex，推理出在这段上的关系（水平/平行/相切…）
+   * 先攒进 sketchInferPending —— 约束要引用图元下标，而图元要到折线收尾才 push 进 entities。
+   */
+  const ptIndex = d0.pts.length;
+  const inf = autoRelate ? sketchInfer : null;
+  const rels = inf?.relations?.filter((q) => !q.suppressed) || [];
+  if (snapRef && !rels.some((q) => q.type === "coincident")) rels.push(snapCoincident(snapRef, 1));
   const r = sketch.addPolylinePoint(p);
+  if ((r === "added" || r === "closed") && ptIndex >= 1 && rels.length) {
+    sketchInferPending.push({
+      seg: ptIndex - 1,
+      idxA: ptIndex - 1,
+      idxB: r === "closed" ? 0 : ptIndex,   // 闭合那一下落回 p0，不是 pN
+      relations: rels,
+    });
+  }
   if (r === "closed") {
-    const n = sketch.entities[sketch.entities.length - 1].pts.length;
-    setStats(`已闭合多边形（${n} 个顶点）· 可继续画别的，或点「完成」拉伸`);
+    const ent = sketch.entities[sketch.entities.length - 1];
+    const wrote = commitPendingInferred(ent);
+    const n = ent.pts.length;
+    setStats(`已闭合多边形（${n} 个顶点）${wrote ? ` · 自动加了 ${wrote} 个关系` : ""} · 可继续画别的，或点「完成」拉伸`);
     redrawSketch();
     return;
   }
@@ -3795,13 +4958,69 @@ function lineTap(p) {
   // 已经有两个点：够一条直线了。除非这次点是贴着上一个端点点的（想续画），否则收尾。
   const d = sketch.draft;
   if (d && d.pts.length >= 2 && !nearLast) {
-    sketch.finishPolyline();
-    setStats("已画好一条直线 · 再点一下开始新的一条（贴着它的端点点击就能接着画）");
+    const ent = finishPolylineWithInfer();
+    const wrote = ent ? lastAutoRelCount : 0;
+    setStats(`已画好一条直线${wrote ? ` · 自动加了 ${wrote} 个几何关系` : ""} · 再点一下开始新的一条（贴着它的端点点击就能接着画）`);
     redrawSketch();
     return;
   }
   setStats(`折线：已 ${sketch.draft ? sketch.draft.pts.length : 0} 个点 · 点回起点闭合，或贴着端点继续`);
   redrawSketch();
+}
+
+/** 结束当前折线，并把这一条线累积的自动关系写成约束（返回图元或 null） */
+let lastAutoRelCount = 0;
+function finishPolylineWithInfer() {
+  if (!sketch) return null;
+  const ent = sketch.finishPolyline();
+  lastAutoRelCount = ent ? commitPendingInferred(ent) : 0;
+  if (ent) invalidateSketchAnalysis();
+  return ent;
+}
+
+/**
+ * 把攒下的推理写成真约束。
+ *
+ * 规则（与 SolidWorks「自动添加几何关系」一致，也是本阶段验收的判据）：
+ *   · 只写没被抑制的那几条（suppressed 的候选在两个候选抢同一个自由度时已经出局）；
+ *   · 每条都过一遍 `buildConstraints` 校验，坏的不进工程；
+ *   · 写完全量重解一次，解不开就**整体撤掉** —— 宁可"没加关系"，
+ *     也不能留一份"约束还在但几何不满足"的草图（那等于给下游埋雷）。
+ */
+function commitPendingInferred(entity) {
+  const entries = sketchInferPending;
+  sketchInferPending = [];
+  if (!sketch || !entity || !entries.length) return 0;
+  const e = sketch.entities.indexOf(entity);
+  if (e < 0) return 0;
+  const specs = [];
+  for (const en of entries) {
+    let out;
+    try {
+      out = applyInferred(sketch.entities, en.relations, {
+        e, seg: en.seg,
+        pointRefs: [{ e, p: `p${en.idxA}` }, { e, p: `p${en.idxB}` }],
+        lineRef: { e, seg: en.seg },
+      });
+    } catch (err) { console.warn("applyInferred", err); continue; }
+    for (const s of out.specs) {
+      const key = JSON.stringify(s);
+      if (sketch.constraints.some((c) => JSON.stringify(c) === key)) continue;   // 别加重
+      specs.push(s);
+    }
+  }
+  if (!specs.length) return 0;
+  const before = JSON.parse(JSON.stringify(sketch.entities));
+  sketch.constraints.push(...specs);
+  let res = null;
+  try { res = solveSketch(sketch.entities, sketch.constraints); } catch (_) { res = null; }
+  if (!res || !res.ok) {
+    sketch.constraints.length -= specs.length;
+    restoreEntities(before);
+    return 0;
+  }
+  invalidateSketchAnalysis();
+  return specs.length;
 }
 
 /** 由当前拖动生成预览图形 */
@@ -3822,8 +5041,9 @@ function finishSketch() {
   if (!sketch) return;
   // 直线还没收尾的话先收尾（未闭合时内核会自动补一条回到起点的直线）
   if (sketch.draft) {
-    const d = sketch.finishPolyline();
+    const d = finishPolylineWithInfer();
     redrawSketch();
+    notifySketchDraftFinish(d);
     if (d) setStats(`未闭合的折线已收尾（${d.pts.length} 个顶点，内核自动补闭合）`);
   }
   // ★ 如果是从特征树点进来改草图的，就直接写回那个特征并重建，
@@ -3959,8 +5179,7 @@ function applyRevolve() {
   awaitingExtrude = false;
   viewer.clearPreviewWire();
   exitSketch();
-  commit("旋转", `${angle.toFixed(0)}° × ${n}轮廓`, "revolve", op);
-  history[history.length - 1].toolShape = tool;
+  commit("旋转", `${angle.toFixed(0)}° × ${n}轮廓`, "revolve", op, tool);
   setStats(`旋转凸台 ${angle.toFixed(0)}°（轴 x=${axisX.toFixed(2)}，${n} 个轮廓）· 用时 ${ms.toFixed(0)} ms`
     + (spans ? " · 提示：轴落在轮廓内部，可能会失败" : "")
     + (mayCross ? " · 提示：轮廓有部分在轴左侧，跨轴会失败" : ""));
@@ -4017,8 +5236,7 @@ function applySweep() {
   viewer.clearPreviewWire();
   shape = newShape;
   exitSketch();
-  commit("扫掠", `距离 ${L.toFixed(1)}mm`, "sweep", op);
-  history[history.length - 1].toolShape = solid;
+  commit("扫掠", `距离 ${L.toFixed(1)}mm`, "sweep", op, solid);
   setStats(`扫掠完成 · 沿法向 ${L.toFixed(1)} mm · 用时 ${ms.toFixed(0)} ms`);
 }
 
@@ -4056,8 +5274,7 @@ function applyLoft() {
   viewer.clearPreviewWire();
   shape = newShape;
   exitSketch();
-  commit("放样", `${wires.length} 个截面`, "loft", op);
-  history[history.length - 1].toolShape = solid;
+  commit("放样", `${wires.length} 个截面`, "loft", op, solid);
   setStats(`放样完成 · ${wires.length} 个截面 · 用时 ${ms.toFixed(0)} ms`);
 }
 
@@ -4155,12 +5372,13 @@ function evaluatePatternEditor(apply) {
     }
     shape = result.shape;
     if (session.editIndex == null) {
-      commit(op.type === "mirror" ? "镜像" : op.kind === "linear" ? "线性阵列" : "圆周阵列", detailOf(op), op.type, op);
-      history[hIndex].toolShape = result.tool;
+      commit(op.type === "mirror" ? "镜像" : op.kind === "linear" ? "线性阵列" : "圆周阵列", detailOf(op), op.type, op, result.tool);
     } else {
-      history[session.editIndex].op = op;
-      history[session.editIndex].detail = detailOf(op);
-      acceptRebuild(result);
+      // 改已有阵列/镜像的参数：一条撤销命令（不可变换行，旧定义留在快照里）
+      docCommands.run(`更新${op.type === "mirror" ? "镜像" : "阵列"}参数`, () => {
+        history = replaceStep(history, session.editIndex, { op, detail: detailOf(op) }).slice(0, hIndex + 1);
+        cacheRebuild(history, result);
+      });
     }
     closePatternEditor(false);
     selectFace(null); refresh(); renderTree();
@@ -4206,15 +5424,19 @@ function applyExtrude(sign) {
   const tool = sketch._lastTool;
   $("extrDist").value = String(+v.toFixed(2));    // 把手柄调出来的值同步回输入框
   exitSketch();
-  commit("拉伸", `${depth > 0 ? "+" : ""}${depth.toFixed(1)}mm × ${n}轮廓`, "extrude", op);
-  if (tool) history[history.length - 1].toolShape = tool;   // 供阵列/镜像复用
+  // 供阵列/镜像复用：必须作为 commit 的参数进事务（写在外面进不了撤销快照）
+  commit("拉伸", `${depth > 0 ? "+" : ""}${depth.toFixed(1)}mm × ${n}轮廓`, "extrude", op, tool);
   setStats(`草图拉伸 ${depth > 0 ? "+" : ""}${depth.toFixed(1)} mm（${n} 个轮廓）· 用时 ${ms.toFixed(0)} ms · ` + $("stats").textContent);
 }
 
 // ---------------------------------------------------------------- 拾取
 viewer.onPick = (faceId, point, pt) => {
+  // 草图里"双击收尾"的那一次落点要吞掉（第一次点击已经落了顶点，第二次只用来收尾）
+  // 用 typeof 判：本文件有两个独立 VM 回归夹具会把 onPick 整段抠出去跑，那里没有这个模块级变量
+  if (typeof _swallowTapUntil === "number" && performance.now() < _swallowTapUntil) return;
   if (patternSession) { setStats("请先应用或取消阵列/镜像，再选择模型上的面"); return; }
-  if (mode === "sketch") {
+  // 判「在不在草图」只认 sketch：草图坞的「选择」走全局 setMode()，mode 会变成 select
+  if (sketch) {
     // 拉伸阶段的轮廓点选：点草图上的轮廓切换选中
     if (awaitingExtrude && contourPicking && sketch && pt) {
       const p = sketch.screenTo2D(pt.x, pt.y, viewer.camera, canvas);
@@ -4230,6 +5452,26 @@ viewer.onPick = (faceId, point, pt) => {
       const hit = pt ? featurePointAt(pt.x, pt.y) : null;
       if (hit) {
         setStats(`选中了${hit.kind === "center" ? "圆心" : "端点"}所在的图元 · 按住拖动可移动，标尺寸时直接点它`);
+      } else if (sketch && pt) {
+        /*
+         * 点中某个草图轮廓（到轮廓线的距离 < 10mm）→ 选中它，并贴着落点浮出
+         * 「拉伸 / 旋转 / 扫掠 / 完成草图」的关联工具栏。
+         * 用 pickEntity 而不是 pickEntity(...,6) + contourPick：后者只在拉伸面板的
+         * "点选轮廓"模式下才该生效，草图里点一下应该就是"选中这个轮廓"。
+         */
+        const p2 = sketch.screenTo2D(pt.x, pt.y, viewer.camera, canvas);
+        if (p2) {
+          const hit = sketch.pickEntity([p2.x, p2.y], 10);
+          if (hit) {
+            sketch.toggleContour(hit.index);
+            redrawSketch(null);
+            const world = sketch.to3D(p2.x, p2.y);
+            showProfileContext([world.x, world.y, world.z]);
+            setStats(`已选中 ${sketch.contourCount} 个轮廓 · 拉伸 / 旋转 / 扫掠 / 完成草图`);
+          } else {
+            hideContextCard();
+          }
+        }
       }
     } else if (sketchTool === "dim" && sketch && pt) {
       const p = sketch.screenTo2D(pt.x, pt.y, viewer.camera, canvas);
@@ -4287,6 +5529,35 @@ viewer.onPick = (faceId, point, pt) => {
   // 给一句解释，别让人以为「点了没反应」是触摸坏了
   if (FEATURE_MODE_LABEL[mode]) {
     setStats(`正在「${FEATURE_MODE_LABEL[mode]}」命令里 · 先在右上浮层点「应用」或「取消」，再选面`);
+    return;
+  }
+  /*
+   * 选中模式的三种落点（按优先级）：
+   *  ① 手指压在棱线上（10px 内）→ 出「圆角 / 倒角」的关联工具栏（这之前只有进圆角模式才认得边）；
+   *  ② 加选开着且已有一个面 → 第二个面进"两面"语境（距离 / 智能尺寸）；
+   *  ③ 其余照旧，选面。
+   */
+  if (mode === "select" && pt) {
+    const e = pickEdgeForContext(pt.x, pt.y);
+    if (e) {
+      /*
+       * 顺序不能反：selectFace(null) 会走 showPicker(null) → hideContextCard()，
+       * 而 hideContextCard 会清掉 ctxSel.edge —— 先赋值就被抹掉了，
+       * 于是"点圆角"时拿不到那条边（实测 edgeSel=0）。
+       */
+      selectFace(null);
+      ctxSel.edge = e;
+      viewer.highlightEdges([e]);
+      showEdgeContext(e);
+      setStats("已选中棱边 · 圆角 或 倒角");
+      return;
+    }
+  }
+  if (mode === "select" && ctxSel.multi && faceId != null && selectedFaceId != null && faceId !== selectedFaceId) {
+    ctxSel.faces = [selectedFaceId, faceId];
+    state.ui.selFaces = ctxSel.faces.slice();
+    viewer.highlightFace(faceId);
+    showPairContext();
     return;
   }
   if (mode === "select" || mode === "pushpull" || mode === "shell") selectFace(faceId);
@@ -4426,6 +5697,79 @@ let history = [];
 let hIndex = -1;
 // Feature definitions form a dependency graph: truncating its first 60 nodes loses the base.
 
+/*
+ * 撤销命令栈
+ * ---------------------------------------------------------------
+ * 为什么不能只靠 history[i].shape：改参数时那一步的定义与实体都被就地覆盖，
+ * 撤销退一个特征就再也拿不回旧尺寸（实测深度 5→12 后按撤销，几何仍是 12）。
+ * 现在每个「用户动作」在命令栈里留一对文档快照（history 数组引用 + 游标），
+ * 实体一律从 history[hIndex].shape 取 —— 与「工程文件只存定义、重开重放」同一口径。
+ * 约定：一次动作 = 一步；嵌套动作只压一次；失败整体还原；无变化不占步。
+ */
+const docCommands = createCommandStack({ read: readDoc, write: writeDoc, onChange: syncCommandButtons });
+
+function readDoc() {
+  return { history, hIndex };
+}
+
+/** 把快照装回文档（撤销 / 重做 / 失败回滚共用）：实体从行里取，界面切到该状态 */
+function writeDoc(snap) {
+  // 文档换了，**绑在旧几何上的工具态**一律先作废（与 gotoStep 同一组约定）：
+  // 撤销改成先弹命令栈之后只走 writeDoc，少了这三行就会出现「文档与 shape 换了，
+  // 但 mode 还是 fillet、edgeSel 还拿着旧 mid、#edgebar 还开着」→ 点「应用」时
+  // applyEdgeTool 拿旧 mid 去 findEdgeNear(shape, mid, 0.6) 报「没有找到可用的边」。
+  // 顺序必须在这里（装回文档之前）：cancelSmartDim 会把自己的旧预览备份写回 shape，
+  // 放到后面就会把刚装回来的实体又盖回上一次预览的几何。
+  // 只清「模式 / 选择 / 预览」—— 参数面板（featPanel + editingStep）**不能**在这里关：
+  // 失败回滚后「面板保留可继续改值」是既定语义（D3）。
+  if (mode === "fillet" || mode === "chamfer" || mode === "shell") exitEdgeMode();
+  else if (mode === "link") exitLinkMode();
+  else if (mode === "smartdim") cancelSmartDim();
+  history = snap.history;
+  hIndex = snap.hIndex;
+  shape = hIndex >= 0 ? (history[hIndex]?.shape ?? null) : null;
+  // 还原出来的行是新对象：补快照标记，否则下一次改参数会退回从第 1 步全量重放。
+  // 只标记游标以内的行 —— 重做分支的行保持未标记，宁可多算一步也不冒用错快照的风险。
+  for (let i = 0; i <= hIndex && i < history.length; i++) {
+    const row = history[i];
+    if (row && row.shape) markSnapshot(row);
+  }
+  // 预览态必须收干净：屏幕上的临时几何与还原后的文档已经不是一回事
+  featPreviewShape = null;
+  featPreviewing = false;
+  $("featEye")?.classList.remove("on");
+  selectedFaceId = null;
+  selSnap = null;
+  dim?.hide();
+  viewer.clearHighlight();
+  viewer.clearSketchLines();
+  viewer.setEdgeData([]);
+  // 选中态清了，语境卡也必须一起收：否则它留在屏幕上（还会在下次重建时重新定位），
+  // 变成一层半透明浮块挡住用户的下一次点选（本轮探针实测：改完参数后卡漂到
+  // 画面中部，下一次点面命中的是卡上的「移动面」按钮，mode 变成 pickface）。
+  showPicker(null);
+  refresh();
+  renderTree();
+}
+
+/**
+ * 撤销/重做按钮的可用性 = 命令栈深度 **或** 历史游标还能动。
+ * 必须单独抽出来：栈的 push 发生在动作函数返回之后，只靠 renderTree 会慢一拍，
+ * 用户看到的就是「栈里有命令但按钮是灰的」。
+ */
+function syncCommandButtons() {
+  const u = $("btnUndo");
+  const r = $("btnRedo");
+  if (u) u.disabled = docCommands.undoDepth === 0 && hIndex <= 0;
+  if (r) r.disabled = docCommands.redoDepth === 0 && hIndex >= history.length - 1;
+}
+
+/** 文档边界（新建 / 打开 / 导入 / 整篇替换脚本）：清栈并同步按钮，绝不跨文档撤销 */
+function clearCommands() {
+  docCommands.clear();
+  syncCommandButtons();
+}
+
 const FEATURE_ICON = {
   base: "▣", sketch: "✎", extrude: "⬒", pushpull: "⇕",
   fillet: "◜", chamfer: "◺", shell: "▢",
@@ -4538,7 +5882,20 @@ function previewEdit() {
     setStats(`👁 预览：${meta.label} ${v}${meta.unit} · 面 ${shape.faces.length} · 点 ✔ 确认，或 ✖ 放弃`);
   } catch (e) {
     const msg = (e instanceof RefLost) ? e.message : (e?.message || e);
-    setStats(`预览失败：${msg} · 模型未改动`);
+    // 失败必须退回**提交态**：上一次成功的 👁 已经把候选实体挂到 shape 上
+    // （featPreviewing=true），只改文案就会留下「文案说未改动、屏幕还是上一次预览」
+    // —— 独立复核实测 volume 仍停在上一预览值。面板保留可编辑，别调 cancelEdit（它会把面板关掉）。
+    if (featPreviewing) {
+      shape = featPreviewShape ?? (hIndex >= 0 ? (history[hIndex]?.shape ?? null) : null);
+      featPreviewShape = null;
+      featPreviewing = false;
+      selectedFaceId = null;
+      selSnap = null;
+      viewer.clearHighlight();
+      refresh();
+    }
+    $("featEye")?.classList.remove("on");
+    setStats(`预览失败：${msg} · 模型未改动（已退回提交态，面板保留可继续改值）`);
   }
 }
 
@@ -4557,13 +5914,23 @@ function cancelEdit(silent = false) {
 }
 
 /**
- * 确定：写进 op 并从起始零件重放整条链。
- * 重放的每一步结果都要回填历史，否则撤销回去会拿到过期实体。
+ * 确定：进一条撤销命令 → 换定义 → 从最早被改动的那一步重放。
+ *
+ * 四条都是本轮补的（缺一条就会出现「撤销没反应」或「画面没跟上」）：
+ *   ① 整段写在一个事务里，失败时文档与画面一起回到动作前（含 👁 预览态）；
+ *   ② 定义换成新的行对象（不可变），旧定义随快照留在撤销栈里；
+ *   ③ 值没变时不重建、不占撤销步；
+ *   ④ 值没变但刚 👁 预览过时，**仍要按提交态重画一次**：预览把候选网格挂到了
+ *      视口上，而 shape 已换回 history[hIndex].shape。只换 shape 不刷新，就留下
+ *      「体积/包围盒/历史都是提交值，屏幕上的网格还是预览值」的假象
+ *      （父验收实测：包围盒 23、网格 z 跨度 28）。历史数组引用没变 → 事务不压栈，
+ *      所以这条刷新不占撤销步。
  */
 function applyEdit() {
   const i = editingStep;
   if (i == null) return;
-  const op = history[i]?.op;
+  const row = history[i];
+  const op = row?.op;
   const meta = op && EDITABLE[op.type];
   if (!meta) return;
   const v = parseFloat($("featVal").value);
@@ -4573,36 +5940,49 @@ function applyEdit() {
     return;
   }
   const newOp = { ...op, [meta.key]: v };
+  const name = featureDisplayName(row, i);
+  const label = `把「${name}」的${meta.label}改为 ${v}${meta.unit}`;
   const t0 = performance.now();
+  const wasPreviewing = featPreviewing;      // 视口上可能挂着候选几何（见 ④）
   try {
-    const r = rebuild(history, hIndex, { [i]: newOp });
-    history[i].op = newOp;
-    history[i].detail = detailOf(newOp);
-    acceptRebuild(r);
-    shape = r.shape;
-    selectedFaceId = null;
-    selSnap = null;
-    dim?.hide();
-    viewer.clearHighlight();
-    viewer.clearSketchLines();
-    viewer.setEdgeData([]);
-    refresh();
-    renderTree();
-    const ms = performance.now() - t0;
+    let out = null;
+    docCommands.run(label, () => {
+      out = commitStepOp(history, hIndex, i, newOp, detailOf);
+      history = out.history;
+      shape = out.shape;
+      // 值没变：历史数组引用都没换 → 事务不会压栈。没预览过就没什么要收的。
+      if (!out.changed && !wasPreviewing) return;
+      selectedFaceId = null;
+      selSnap = null;
+      dim?.hide();
+      viewer.clearHighlight();
+      viewer.clearSketchLines();
+      viewer.setEdgeData([]);
+      showPicker(null);        // 选中态清了，语境卡一起收（否则它挡住下一次点选，见 writeDoc）
+      refresh();
+      if (out.changed) renderTree();
+    });
     featPreviewShape = null;
     featPreviewing = false;
+    $("featEye").classList.remove("on");
     closeEdit();
-    setStats(`已将「${featureDisplayName(history[i], i)}」的${meta.label}改为 ${v}${meta.unit} · ` +
-      `重放 ${r.steps} 步 用时 ${ms.toFixed(0)} ms · 面 ${shape.faces.length} · ` +
+    if (!out?.changed) {
+      setStats(`「${name}」的${meta.label}本来就是 ${v}${meta.unit} · 没有产生修改，不占撤销步`);
+      return;
+    }
+    const ms = performance.now() - t0;
+    setStats(`已将「${name}」的${meta.label}改为 ${v}${meta.unit} · ` +
+      `重放 ${out.result.steps} 步 用时 ${ms.toFixed(0)} ms · 面 ${shape.faces.length} · ` +
       $("stats").textContent.replace(/^面 \d+ · /, ""));
   } catch (e) {
-    // 关键：失败时模型保持原样，绝不半途改掉
+    // 事务已经在 catch 里把文档与画面还原成「已提交状态」，这里只负责说清楚原因。
+    // 面板不关，让用户直接改成能用的值。
     if (e instanceof RefLost) {
       setStats(`改不了：${e.message}。出问题的是第 ${e.stepIndex + 1} 步「${e.stepLabel}」· 模型未改动`);
     } else {
       setStats("重放失败：" + (e?.message || e) + " · 模型未改动");
     }
-    return;                     // 不关面板，让用户改回一个能用的值
+    return;
   }
 }
 
@@ -4611,12 +5991,21 @@ function applyEdit() {
  * op 是这一步的「参数化定义」—— 有了它才能改历史参数后重放；
  * 只有快照的话就只能回退，改不了任何历史尺寸。
  */
-function commit(label, detail = "", type = "base", op = null) {
-  history = history.slice(0, hIndex + 1);
-  history.push({ shape, label, detail, icon: FEATURE_ICON[type] || "▪", op });
-  markSnapshot(history[history.length - 1]);
-  hIndex = history.length - 1;
-  renderTree();
+function commit(label, detail = "", type = "base", op = null, tool = null) {
+  // tool = 这个特征**产出的那块材料**（阵列/镜像要拿它当源）。
+  // 必须在事务内就落到行上：`docCommands.run` 的 after 快照在返回前就拍完了
+  // （src/param-edit.js 的 freeze 浅拷贝行对象），事务外再写 `row.toolShape = tool`
+  // 进不了快照 —— 撤销后重做会把「没有 toolShape」的行装回来，阵列/镜像随即报
+  // 「先创建草图拉伸、旋转等特征」，而几何其实一点没坏（replay 下一次重建才自愈）。
+  const row = { shape, label, detail, icon: FEATURE_ICON[type] || "▪", op, toolShape: tool || null };
+  // 加特征也是一条可撤销命令：否则「改参数 → 加特征 → 撤销」会把新特征悄悄吞掉
+  docCommands.run(`新建「${label}」`, () => {
+    const next = appendStep(history, hIndex, row);
+    history = next.history;
+    hIndex = next.hIndex;
+    markSnapshot(history[hIndex]);
+    renderTree();
+  });
 }
 
 /** 跳到历史中的某一步 */
@@ -4641,24 +6030,23 @@ function toggleSuppress(i) {
   else if (mode === "smartdim") cancelSmartDim();
   const h = history[i];
   const want = !h.suppressed;
-  const backupShape = shape;
-  h.suppressed = want;
+  const name = featureDisplayName(h, i);
   try {
-    const r = rebuild(history, history.length - 1);
-    shape = r.shape;
-    hIndex = history.length - 1;
-    cacheRebuild(history, r);
-    selectFace(null);
-    refresh({});
-    renderTree();
+    docCommands.run(`${want ? "压制" : "解压"}「${name}」`, () => {
+      // 不可变换行：压制标记改行对象，历史数组换代（事务才认得这次改动）
+      history = replaceStep(history, i, { suppressed: want });
+      rebuildInto(history, history.length - 1);
+      hIndex = history.length - 1;
+      shape = history[hIndex].shape;
+      selectFace(null);
+      refresh({});
+      renderTree();
+    });
     setStats(want
-      ? `已压制「${featureDisplayName(h, i)}」· 这一步暂时不参与计算（再点眼睛可解压）`
-      : `已解压「${featureDisplayName(h, i)}」· 重新参与计算`);
+      ? `已压制「${name}」· 这一步暂时不参与计算（再点眼睛可解压，也可撤销）`
+      : `已解压「${name}」· 重新参与计算`);
   } catch (e) {
-    h.suppressed = !want;      // 回滚
-    shape = backupShape;
-    refresh({});
-    renderFeatTree();
+    // 事务已整体回滚（定义、实体、画面），这里只报原因
     setStats(`${want ? "压制" : "解压"}失败：后面的特征依赖它 · ${e?.message || e}`);
   }
 }
@@ -4670,38 +6058,31 @@ function deleteStep(i) {
   if (["fillet", "chamfer", "shell"].includes(mode)) exitEdgeMode();
   else if (mode === "link") exitLinkMode();
   else if (mode === "smartdim") cancelSmartDim();
-  const backupHistory = history;
-  const backupShape = shape;
-  const backupIndex = hIndex;
   const removedLabel = featureDisplayName(history[i], i);
 
-  try { history = withoutFeature(history, i); }
+  let next;
+  try { next = withoutFeature(history, i); }
   catch (e) { setStats(`删不掉「${removedLabel}」：${e.message} · 当前工程已保留`); return; }
-  if (!history.length) {
-    shape = null;
-    hIndex = -1;
-    refresh({});      // refresh 在 shape 为空时会清空整个视图（含网格/边/高亮）
-    selectFace(null);
-    renderTree();
-    setStats(`已删除「${removedLabel}」· 模型现在是空的（可以重新建一个）`);
-    return;
-  }
   try {
-    const r = rebuild(history, history.length - 1);
-    shape = r.shape;
-    hIndex = history.length - 1;
-    cacheRebuild(history, r);
-    selectFace(null);
-    refresh({});
-    renderTree();
-    setStats(`已删除「${removedLabel}」· 重放 ${r.steps} 步 · 用时 ${r.logs.reduce((a, b) => a + b.ms, 0).toFixed(0)} ms`);
+    docCommands.run(`删除「${removedLabel}」`, () => {
+      history = next;
+      if (!history.length) {
+        hIndex = -1;
+        shape = null;
+      } else {
+        rebuildInto(history, history.length - 1);
+        hIndex = history.length - 1;
+        shape = history[hIndex].shape;
+      }
+      selectFace(null);
+      refresh({});      // refresh 在 shape 为空时会清空整个视图（含网格/边/高亮）
+      renderTree();
+    });
+    setStats(history.length
+      ? `已删除「${removedLabel}」· 剩 ${history.length} 个特征（可撤销）`
+      : `已删除「${removedLabel}」· 模型现在是空的（可撤销，也可以重新建一个）`);
   } catch (e) {
-    // 后面的步骤依赖被删的那个 → 整段回滚，绝不留下半成品
-    history = backupHistory;
-    shape = backupShape;
-    hIndex = backupIndex;
-    refresh({});
-    renderFeatTree();
+    // 后面的步骤依赖被删的那个 → 事务整体回滚，绝不留下半成品
     setStats(`删不掉「${removedLabel}」：后面的特征依赖它 · ${e?.message || e}`);
   }
 }
@@ -4730,8 +6111,37 @@ function gotoStep(i) {
     ` · 此时 面 ${shape?.faces.length || 0} · ` + $("stats").textContent.replace(/^面 \d+ · /, ""));
 }
 
-const undo = () => gotoStep(hIndex - 1);
-const redo = () => gotoStep(hIndex + 1);
+/**
+ * 撤销 = 撤销最近一次动作（参数编辑 / 加特征 / 删除 / 压制 / 跳步 / 脚本运行）。
+ * 命令栈空了才退回旧行为「往前退一个历史步骤」。返回值：被撤销的命令名，没有则 null。
+ */
+function undo() {
+  if (mode === "sketch") exitSketch();      // 与旧行为一致：草图里先退出草图再撤历史
+  const label = docCommands.undo();
+  if (label) {
+    setStats(`已撤销：${label}` + (hIndex >= 0 ? ` · 当前 面 ${shape?.faces.length || 0}` : " · 模型回到空状态"));
+    return label;
+  }
+  gotoStep(hIndex - 1);
+  return null;
+}
+
+function redo() {
+  if (mode === "sketch") exitSketch();
+  const label = docCommands.redo();
+  if (label) {
+    setStats(`已重做：${label}` + (hIndex >= 0 ? ` · 当前 面 ${shape?.faces.length || 0}` : ""));
+    return label;
+  }
+  gotoStep(hIndex + 1);
+  return null;
+}
+
+/** 特征树 / 时间线上点某一步 = 一条可撤销的「跳步」命令（而不是直接把游标搬走） */
+function jumpToStep(i) {
+  if (i < 0 || i >= history.length || i === hIndex) return;
+  docCommands.run(`回到第 ${i + 1} 步：${history[i].label}`, () => gotoStep(i));
+}
 
 /** 从历史里重放一遍并把每一步的实体回填（改完定义后统一走这里） */
 function acceptRebuild(result) {
@@ -4798,22 +6208,25 @@ function editSketchOf(i) {
   }
 }
 
-/** 编辑完草图：把图元和约束写回那个特征，然后重建下游 */
+/** 编辑完草图：把图元和约束写回那个特征，然后重建下游（也是一条可撤销命令） */
 function commitSketchEdit(i) {
   const f = history[i];
   if (!f?.op) { exitSketch(); return; }
   const entities = JSON.parse(JSON.stringify(sketch.entities));
   const constraints = JSON.parse(JSON.stringify(sketch.constraints));
   const selected = [...sketch.selected];
-  const originalOp = f.op;
-  const originalDetail = f.detail;
-  f.op = { ...f.op, entities, constraints, selected };
-  f.detail = detailOf(f.op);
-  if (rebuildAndApply(`已更新第 ${i + 1} 步的草图（${entities.length} 图元${constraints.length ? ` · ${constraints.length} 约束` : ""}）`)) {
+  const newOp = { ...f.op, entities, constraints, selected };
+  const msg = `已更新第 ${i + 1} 步的草图（${entities.length} 图元${constraints.length ? ` · ${constraints.length} 约束` : ""}）`;
+  try {
+    docCommands.run(`改第 ${i + 1} 步「${f.label}」的草图`, () => {
+      // 不可变换行：草图的图元/约束换进新行对象，旧定义留在撤销栈里
+      history = replaceStep(history, i, { op: newOp, detail: detailOf(newOp) });
+      if (!rebuildAndApply(msg)) throw new Error("草图更新后重建失败");
+    });
     exitSketch();
-  } else {
-    f.op = originalOp;
-    f.detail = originalDetail;
+  } catch (e) {
+    // 事务已把定义与实体还原；回草图让用户继续改
+    if (!/重建失败/.test(String(e?.message))) setStats(`草图更新失败：${e?.message || e} · 模型未改动`);
     redrawSketch();
   }
 }
@@ -4853,13 +6266,21 @@ function renderTree() {
       const es = ev.target.closest?.("[data-edit-sketch]");
       if (es) { editSketchOf(+es.dataset.editSketch); return; }
       const ed = ev.target.closest?.("[data-ed]");
-      if (ed) { editStep(+ed.dataset.ed); return; }
+      if (ed) {
+        const i = +ed.dataset.ed;
+        // 只对「游标之后」的步骤先落位（jumpToStep 进命令栈，不再静默搬游标）。
+        // 游标之前的步骤**不能**先跳：跳步会把游标搬回去，随后确认改参数就按
+        // 「在回滚位置改参数」的既定口径截断下游分支 —— 用户只是改个值，右凸台会没了。
+        if (i > hIndex) jumpToStep(i);
+        editStep(i);
+        return;
+      }
       if (it.dataset.sketch != null) { editSketchOf(+it.dataset.sketch); return; }
-      gotoStep(+it.dataset.i);
+      jumpToStep(+it.dataset.i);
     };
   }
-  $("btnUndo").disabled = hIndex <= 0;
-  $("btnRedo").disabled = hIndex >= history.length - 1;
+  // 按钮状态必须跟着命令栈一起走：只改函数栈、不改 disabled，用户会以为撤销不可用
+  syncCommandButtons();
   el.scrollTop = el.scrollHeight;
   el.querySelector(`.tree-item[data-i="${hIndex}"]`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
   renderFeatTree();     // 左侧的结构树跟着一起刷新
@@ -5144,7 +6565,7 @@ function showPushPullDim(value = 0) {
  * 触摸上就是"按住片刻再拖"：手指先落在点上，浏览器自然走这条拖动路径，
  * 而单纯的轻点仍然走 onTap（拾取/标注），两者不冲突。
  */
-let grabState = null;        // { e, from:[x,y], kind }
+let grabState = null;        // { e, pRef, from:[x,y], kind, startClient, before }
 
 /** 屏幕位置有没有落在某个特征点上（容差按像素） */
 function featurePointAt(clientX, clientY, tolPx = 16) {
@@ -5157,7 +6578,7 @@ function featurePointAt(clientX, clientY, tolPx = 16) {
       const s = sketchToScreen(c.p);
       if (!s) continue;
       const d = Math.hypot(s[0] - clientX, s[1] - clientY);
-      if (d < bd) { bd = d; best = { e: i, p: c.p, scr: s, kind: c.kind }; }
+      if (d < bd) { bd = d; best = { e: i, p: c.p, scr: s, kind: c.kind, ref: c.ref }; }
     }
   });
   return best;
@@ -5166,8 +6587,9 @@ function featurePointAt(clientX, clientY, tolPx = 16) {
 viewer.cam.onDragStart = (e) => {
   // 手柄持有的手势不能被另一指转成第二次几何编辑。
   if (dim?._drag || dim?._editing) return false;
-  // 草图模式：矩形/圆用拖动绘制；直线用点击落点，拖动留给旋转相机
-  if (mode === "sketch" && sketch) {
+  // 草图里：矩形/圆用拖动绘制；直线用点击落点，拖动留给旋转相机
+  // 判「在不在草图」只认 sketch —— 草图坞的「选择」走的是全局 setMode()，mode 会变成 select（历史坑）
+  if (sketch) {
     // 优先：按住特征点 → 拖动整个图元
     const hit = featurePointAt(e.clientX, e.clientY);
     if (hit && !sketch.draft) {
@@ -5177,13 +6599,16 @@ viewer.cam.onDragStart = (e) => {
        * 松手后也显示"已移动图元"，标注根本做不了（用户实测反馈）。
        * 现在松手时按位移分流：没动 → 当成点击（走 viewer._tap，也就是拾取/标注）；
        * 动了 → 才是真的移动。
+       *
+       * v6：拖动本身走 dragSolve（见 applyDrag）—— 这里要记下**具名点引用**（ref.p），
+       * 否则只能按坐标猜"拖的是哪个自由度"，约束就保不住。
        */
       grabState = {
-        e: hit.e, from: [hit.p[0], hit.p[1]], kind: hit.kind,
+        e: hit.e, pRef: hit.ref?.p || "center", from: [hit.p[0], hit.p[1]], kind: hit.kind,
         startClient: [e.clientX, e.clientY],
         before: JSON.parse(JSON.stringify(sketch.entities)),
       };
-      setStats(`按住${hit.kind === "center" ? "圆心" : "端点"}可拖动图元 · 轻点则是选中它（之后能标尺寸）`);
+      setStats(`按住${hit.kind === "center" ? "圆心" : "端点"}可拖动图元 · 已有尺寸/关系会一起保住，轻点则是选中它`);
       return true;
     }
     grabState = null;
@@ -5247,50 +6672,69 @@ function flushDragFrame() {
 }
 
 function applyDrag(e) {
-  // 拖特征点：把整个图元按位移挪走
+  // 拖特征点 → 走 dragSolve：几何跟着手指走，已有尺寸/关系一条都不许破
   if (grabState && sketch) {
     if (Math.hypot(e.clientX - grabState.startClient[0], e.clientY - grabState.startClient[1]) < 6) return;
     const p = sketch.screenTo2D(e.clientX, e.clientY, viewer.camera, canvas);
-    if (p) {
-      const ddx = p.x - grabState.from[0], ddy = p.y - grabState.from[1];
-      const snap = JSON.parse(JSON.stringify(sketch.entities));
-      sketch.translateEntities([grabState.e], ddx, ddy);
-      /*
-       * ★ 约束优先：拖完之后立刻把约束重新解一遍。
-       *
-       * 不加这一步的话，拖动是**直接改坐标**的，会把已有尺寸顶掉
-       * （比如标了"圆心到线 20"，一拖圆心距离就变成别的值，
-       * 用户实测反馈"移动就把距离关系顶掉了"）。
-       * SolidWorks 的行为是：已标尺寸锁住，拖动只在**剩余自由度**里生效 ——
-       * 求解器正好能给出这个效果：它会让几何回到"满足全部约束且离拖动目标最近"的位置。
-       *
-       * 解不开（拖动把约束逼到无解）就整段回滚，宁可拖不动也不能悄悄破坏约束。
-       */
-      if (sketch.constraints.length) {
-        const r = solveSketch(sketch.entities, sketch.constraints);
-        if (!r.ok) {
-          restoreEntities(snap);
-          setStats("这个方向被约束卡住了（再拖就无解）· 先删掉或改掉相关尺寸/关系");
-        }
-      }
-      grabState.from = [p.x, p.y];
-      redrawSketch();
+    if (!p) return;
+    /*
+     * ★ 为什么不再用「平移 + 重解」那一套：
+     *   平移是直接改坐标，再由求解器把几何拉回"最接近"的位置 —— 对于被钉住的方向，
+     *   求解器只能就近妥协，屏幕上就是"拖了不动但橡皮筋在抖"。更要命的是它永远返回
+     *   ok（因为限制的都是软目标），完全定义的图元被拖得动一点点也照样报成功。
+     *   dragSolve 把"拖动目标"当**小权重软约束**、把几何关系当**硬约束**：
+     *     · 有自由度的方向 → 精确落到手指位置（实测 2e-8mm）；
+     *     · 被约束死的地方 → 明确 blocked，并**回滚**（绝不返回半拉子几何）。
+     * 拖动是绝对目标（不是增量），所以不会有累积漂移。
+     */
+    const t0 = performance.now();
+    let res = null;
+    try {
+      res = dragSolve(sketch.entities, sketch.constraints, {
+        kind: "point",
+        ref: { e: grabState.e, p: grabState.pRef || "center" },
+        to: [p.x, p.y],
+      });
+    } catch (err) {
+      console.warn("dragSolve 失败", err);
     }
+    _drawMs = performance.now() - t0;
+    if (res) grabState.lastDragMs = +_drawMs.toFixed(2);
+    if (!res || res.blocked) {
+      const reason = res?.reason || "这个方向上被约束住了";
+      // 只在原因变化时刷状态栏：拖动会连续触发，刷屏等于没有提示
+      if (grabState.blockedReason !== reason) {
+        grabState.blockedReason = reason;
+        setStats(`拖不动：${reason} · 完全定义/尺寸锁死的方向改不了（先删掉或改掉相关尺寸/关系）`);
+      }
+      return;                                   // 几何一点不动
+    }
+    grabState.blockedReason = "";
+    grabState.moved = true;
+    sketch.entities = res.entities;             // 返回值是**新数组**（入参不被修改）
+    invalidateSketchAnalysis();
+    redrawSketch();                             // 拖动中不重算自由度（sketchAnalysis 复用缓存）
     return;
   }
-  if (mode === "sketch" && drawing && sketch) {
+  if (drawing && sketch) {
+    const t0 = performance.now();
     const p = updateSnap(e.clientX, e.clientY);      // 终点同样吸附
     if (p) {
       drawing.cur = p;
+      notifySketchDraftMove(p, e);                   // 智能草图路的挂点：推理符号/DOF 着色在这儿接
       const prev = currentPreview();
       redrawSketch(prev);
       if (prev) {
-        const tag = p.snapped ? ` · 已捕捉${SNAP_KINDS[p.kind]?.label || ""}` : "";
+        const tag = p.snapped
+          ? ` · 已捕捉${SNAP_KINDS[p.kind]?.label || INFER_SYMBOLS[p.kind]?.label || ""}`
+          : "";
         setStats((prev.kind === "rect"
           ? `矩形 ${prev.w.toFixed(1)} × ${prev.h.toFixed(1)} mm`
           : `圆 Ø${(prev.r * 2).toFixed(1)} mm`) + tag);
       }
     }
+    // 拖动绘制也记一帧耗时（推理在这儿不跑，但重画是同一笔开销）
+    perfSample({ inferMs: _inferMs, drawMs: performance.now() - t0, totalMs: performance.now() - t0 });
     return;
   }
   if (!drag) return;
@@ -5319,7 +6763,7 @@ viewer.cam.onDragCancel = () => {
     selectFace(faceId);
   }
   snap.clear(); snapGuides = [];
-  if (sketch) redrawSketch();
+  if (sketch) { invalidateSketchAnalysis(); redrawSketch(); }
 };
 
 viewer.cam.onDragEnd = (e) => {
@@ -5336,18 +6780,29 @@ viewer.cam.onDragEnd = (e) => {
     if (dist < 6) {
       if (sketch && g.before) restoreEntities(g.before);
       viewer._tap({ x: e ? e.clientX : g.startClient[0], y: e ? e.clientY : g.startClient[1] });
+      updateSketchStateUI();
       return;
     }
-    setStats("已移动图元 · 位置不会自动加约束（需要的话用尺寸/关系固定它）");
+    /*
+     * 松手即提交（entities 在拖动过程中已经是最新的、且每一步都满足全部约束）。
+     * 这里统一重算一次自由度：拖动中是复用旧结果的（见 sketchAnalysis），松手后状态色要跟上。
+     */
+    invalidateSketchAnalysis();
     redrawSketch();
+    if (g.moved) {
+      setStats(`已移动图元 · 已按约束重解（${sketch.constraints.length} 条尺寸/关系一条没破）`);
+    } else {
+      setStats(`拖不动：${g.blockedReason || "这个方向上被约束住了"} · 完全定义的方向改不了（先删掉或改掉相关尺寸/关系）`);
+    }
     return;
   }
-  if (mode === "sketch" && drawing && sketch) {
+  if (drawing && sketch) {
     const { start, cur } = drawing;
     drawing = null;
     let e = null;
     if (sketchTool === "rect") e = sketch.addRect(start, cur);
     else e = sketch.addCircle(start, cur);
+    if (e) invalidateSketchAnalysis();
     redrawSketch(null);
     if (!e) setStats("图形太小，已忽略；请拖出更大范围");
     else setStats(sketchTool === "rect"
@@ -5372,6 +6827,8 @@ viewer.cam.onDragEnd = (e) => {
 // ---------------------------------------------------------------- 工具栏
 function setMode(m) {
   mode = m;
+  // 离开"选择"就把加选状态收掉：否则切到圆角/抽壳后点面会被当成"加选第二个面"
+  if (m !== "select" && typeof ctxSel !== "undefined") { ctxSel.multi = false; ctxSel.faces = []; }
   viewControls.refresh();
   for (const b of document.querySelectorAll("[data-act]")) {
     if (["snap", "datum", "script"].includes(b.dataset.act)) continue;
@@ -5532,7 +6989,7 @@ document.querySelectorAll("#sketchbar button").forEach((b) => {
     const a = b.dataset.sact;
     if (a === "select") {
       // 纯选择：停掉所有绘制/标注模式，松手才能顺利移动元素
-      if (sketch?.draft) sketch.finishPolyline();
+      if (sketch?.draft) finishPolylineWithInfer();
       sketchTool = "select";
       sketch._cursor = null;
       dimEntity = null; $("dimPanel").classList.add("hidden");
@@ -5544,7 +7001,7 @@ document.querySelectorAll("#sketchbar button").forEach((b) => {
     }
     else if (a === "rect" || a === "circle" || a === "line" || a === "dim" || a === "ref" || a === "offset") {
       // 切工具时把没画完的折线收尾，免得留在半截状态
-      if (sketch?.draft && a !== "line") sketch.finishPolyline();
+      if (sketch?.draft && a !== "line") finishPolylineWithInfer();
       sketchTool = a;
       sketch._cursor = null;
       if (a !== "dim") { dimEntity = null; $("dimPanel").classList.add("hidden"); }
@@ -6405,7 +7862,7 @@ function enterSketchToolPad(kind) {
   closeFeaturePads();
   skTool = kind;
   // 半截折线先收尾，否则新图元会跟它连在一起
-  if (sketch?.draft) sketch.finishPolyline();
+  if (sketch?.draft) finishPolylineWithInfer();
   // 浮层开着时画布上的点击只做选择：避免手指一碰就多出一个图元
   sketchTool = "select";
   syncSketchToolUI();
@@ -6605,6 +8062,7 @@ viewer.cam.onLongPress = ({ x, y }) => {
   datum = new Datum(viewer);        // 世界坐标系 + XYZ 基准面
   refresh({ fit: true });
   commit("起始零件", "60×40×8 带孔板", "base", { type: "base" });
+  clearCommands();          // 起始零件是文档边界：它不属于用户动作，不进撤销栈
   setStats(`起始零件生成 ${tGen.toFixed(0)} ms · ` + $("stats").textContent);
 
   try {
@@ -6628,7 +8086,56 @@ viewer.cam.onLongPress = ({ x, y }) => {
   // 触控笔悬停虚拟光标：笔尖离屏（未落笔）时指示当前位置；只认 pointerType=pen
   const penCursor = installPenCursor();
 
+  // ---------------------------------------------------------------- 平板手势（Shapr3D 习惯）
+  /*
+   * 两指轻点 = 撤销、三指轻点 = 重做。判据写在 src/ui-gestures.js：
+   * 全部触点离手 < 250ms 且每个触点位移 < 10px —— 两指缩放/平移一动就超过 10px，不会误触发。
+   * 手势层只旁听 touch 事件，不 preventDefault，camera.js 的双指缩放/平移完全不受影响。
+   */
+  const tapGestures = installTapGestures({
+    target: canvas,
+    onTwoFingerTap: () => gestureUndoRedo("undo"),
+    onThreeFingerTap: () => gestureUndoRedo("redo"),
+    // 双击空白（非草图）：把模型适配到视图（Shapr3D 的双击=缩放到对象，这里落到"适配"）
+    onDoubleTap: () => {
+      if (sketch) return;                     // 草图里的双击由 pointerdown 那条负责（收尾折线）
+      if (!viewer.bbox || viewer.bbox.isEmpty?.()) return;
+      viewer.cam.fit(viewer.bbox);
+      setStats("已适配模型到视图（双击画布）");
+    },
+  });
+
+  // ---------------------------------------------------------------- 全局状态容器（解耦第 1 步）
+  /*
+   * 详细说明见 src/state.js 顶部。这一批槽位把 main.js 的核心全局暴露成
+   * state.doc / state.ui / state.view 上的 getter/setter，**存储仍留在 main.js 的模块作用域**
+   * （bindSlots 传的是委托，不是搬家）——所以任何读写与改造前逐字节等价（行为零变化）。
+   * 但别的模块从此可以 `import { state } from "./state.js"` 拿到
+   * shape / history / hIndex / sketch / datum / mode / selectedFaceId / edgeSel / sketchTool
+   * 以及 viewer / camera / canvas，并对可写槽位直接改。
+   * 迁移期注意：直接改 main.js 的变量**不会**触发 subscribe（只有走 setter 才会）。
+   * 后续每迁一族（草图会话 → 智能尺寸 → 特征提交 → 导出），把对应 get/set 换成自己的存储即可。
+   */
+  bindSlots({
+    "doc.shape": { get: () => shape, set: (v) => { shape = v; }, owner: "main.js", note: "当前实体（历史游标所指那一步）" },
+    "doc.history": { get: () => history, set: (v) => { history = v; }, owner: "main.js", note: "特征历史（可保存）" },
+    "doc.hIndex": { get: () => hIndex, set: (v) => { hIndex = v; }, owner: "main.js", note: "历史游标" },
+    "doc.sketch": { get: () => sketch, set: (v) => { sketch = v; }, owner: "main.js", note: "草图会话；判「在不在草图」只认它，不认 mode" },
+    "doc.datum": { get: () => datum, set: (v) => { datum = v; }, owner: "main.js", note: "世界坐标系 + XYZ 基准面" },
+    "ui.appMode": { get: () => appMode, set: (v) => { appMode = v; }, owner: "main.js", note: "null | model | view（开始界面/建模/看图）" },
+    "ui.mode": { get: () => mode, set: (v) => { mode = v; }, owner: "main.js", note: "select | pushpull | sketch | fillet | chamfer | shell …" },
+    "ui.selectedFaceId": { get: () => selectedFaceId, set: (v) => { selectedFaceId = v; }, owner: "main.js" },
+    "ui.edgeSel": { get: () => edgeSel, set: (v) => { edgeSel = v; }, owner: "main.js" },
+    "ui.sketchTool": { get: () => sketchTool, set: (v) => { sketchTool = v; }, owner: "main.js" },
+    "view.viewer": { get: () => viewer, owner: "main.js", note: "three.js 视口（只读）" },
+    "view.camera": { get: () => viewer?.camera || null, owner: "main.js", note: "只读" },
+    "view.canvas": { get: () => canvas, owner: "main.js", note: "只读" },
+    "view.gridGroup": { get: () => gridGroup, set: (v) => { gridGroup = v; }, owner: "main.js", note: "草图世界网格" },
+  });
+
   window.__padcad = {
+    state,
+
     // 建模脚本入口（AI/外部工具可以直接驱动：runScript(script) / runScript(script,"append")）
     runScript: (script, scriptMode = "replace") => applyModelScript(script, scriptMode),
     runScriptJSON: (text, scriptMode = "replace") => {
@@ -6650,6 +8157,10 @@ viewer.cam.onLongPress = ({ x, y }) => {
     finishSketch, applyExtrude, setSketchTool: (t) => { sketchTool = t; syncSketchToolUI(); },
     enterEdgeMode, enterShellMode, exitEdgeMode, applyEdgeTool, applyShell,
     pickEdgeAt: (x, y) => viewer.pickEdgeAt(x, y),
+    // 验收脚本用：这个屏幕点会落到哪条棱边 / 哪个面上（与真实点按走同一套判定）
+    probeEdgeAt: (x, y) => { const e = pickEdgeForContext(x, y); return e ? { hash: e.hash, mid: e.mid } : null; },
+    probeFaceAt: (x, y) => { const h = viewer.pickAt(x, y); return h ? h.faceId : null; },
+    project: (p3) => worldToScreen(p3),   // 世界 → 屏幕（验收脚本算"某个面在屏幕哪儿"用）
     toggleEdge,
     get dim() { return dim; },
     get dimVisible() { return !!dim && dim.visible; },
@@ -6675,8 +8186,89 @@ viewer.cam.onLongPress = ({ x, y }) => {
     curvedDriver: () => curvedDriver,
     commitDimValue,
     undo, redo, gotoStep, setTreeOpen,
+    // 撤销命令栈的可观测面（验收脚本读它判「一次提交只记一步」「无变化不占步」）
+    get undoDepth() { return docCommands.undoDepth; },
+    get redoDepth() { return docCommands.redoDepth; },
+    get undoLabel() { return docCommands.undoLabel; },
+    get redoLabel() { return docCommands.redoLabel; },
+    jumpToStep,
     // 模式切换 / 看图（供测试与外部调用）
     get appMode() { return appMode; },
+    // ---- 语境工具栏（关联工具栏）与集成挂点（给验收脚本 / 其它路用）----
+    get contextKind() { return ctxSel.kind; },
+    get contextNote() { return document.querySelector("#picker .pk-note")?.textContent || ""; },
+    get sketchTool() { return sketchTool; },
+    get uiGestureStats() { return tapGestures.stats(); },
+    get curvedDriverActive() { return curvedDriver ? curvedDriver.label : null; },
+    get contextLabels() { return [...document.querySelectorAll("#picker [data-ctx]")].map((b) => b.textContent.trim()); },
+    get contextActionsShown() { return [...document.querySelectorAll("#picker [data-ctx]")].map((b) => ({ key: b.dataset.ctx, label: b.textContent.trim() })); },
+    get pickerVisible() { const p = $("picker"); return !!p && !p.classList.contains("hidden") && getComputedStyle(p).display !== "none"; },
+    get multiSelect() { return ctxSel.multi; },
+    get selFaces() { return ctxSel.faces.slice(); },
+    setContextDistance: (v) => { const i = $("dist"); if (i) i.value = String(v); },
+    runContextAction,
+    showEdgeContextForTest: (edge) => { ctxSel.edge = edge; showEdgeContext(edge); },
+    showProfileContextForTest: () => showProfileContext(),
+    registerAppMode, enterAppMode, exitAppMode,
+    get appModeName() { return state.ui.appModeName || null; },
+    onSketchDraftMove, onSketchDraftFinish,
+    get draftHookCount() { return { move: _draftMoveHooks.size, finish: _draftFinishHooks.size }; },
+    // ---- 智能草图（v6 第二阶段）：推理 / 自由度状态 / 拖动保约束 ----
+    get autoRelate() { return autoRelate; },
+    setAutoRelate: (v) => setAutoRelate(v),
+    /** 自由度分析结果（完全定义/欠定义/过定义、逐图元状态色）。带缓存：几何没变就是同一份对象 */
+    get sketchAnalysis() { return sketch ? sketchAnalysis() : null; },
+    get sketchStateText() { return sketch ? sketchStateText(sketchAnalysis()) : ""; },
+    /** 状态条上真正显示出来的那行字（验收断言它，而不是断言元素存在） */
+    get sketchStateShown() {
+      const box = $("sketchState");
+      if (!box || box.classList.contains("hidden")) return "";
+      return box.querySelector(".ss-text")?.textContent || "";
+    },
+    get sketchStateVisible() { const b = $("sketchState"); return !!b && !b.classList.contains("hidden"); },
+    /** 状态条上的「删除冲突关系 #N」入口（过定义时才有内容） */
+    get sketchConflictFix() {
+      const b = $("sketchFixConflict");
+      if (!b) return null;
+      return { visible: !b.classList.contains("hidden"), text: b.textContent || "", index: b.dataset.index === "" ? null : Number(b.dataset.index) };
+    },
+    /** 验收用：走状态条那个按钮的同一条路径删掉冲突关系（真实点击在验收脚本里用触摸派发） */
+    deleteConflictRelation: () => deleteConflictRelation(),
+    /** 尺寸面板底部统计行（口径：本图元尺寸 / 全草图关系） */
+    get dimPanelCounts() {
+      const el = document.getElementById("dimPanelHint");
+      return { ...dimPanelCounts(), text: el?.textContent || "", visible: !!(el && !$("dimPanel")?.classList.contains("hidden")) };
+    },
+    /** 推理符号表（验收断言"每种符号无歧义"用） */
+    get inferSymbols() { return inferSymbolsTable(); },
+    get sketchAutoRel() { return { on: autoRelate, visible: !!$("sketchAutoRel"), label: $("sketchAutoRel")?.textContent || "" }; },
+    /** 最近一次推理结果（符号/吸附坐标/生效的关系类型） */
+    get sketchInfer() {
+      if (!sketchInfer) return null;
+      return {
+        symbols: (sketchInfer.symbols || []).map((s) => ({ kind: s.kind, glyph: s.glyph, label: s.label, at: s.at })),
+        snapped: sketchInfer.snapped,
+        applied: sketchInfer.applied,
+        best: sketchInfer.best?.type || null,
+        relations: (sketchInfer.relations || []).map((r) => ({ type: r.type, confidence: +r.confidence.toFixed(3), suppressed: !!r.suppressed })),
+      };
+    },
+    /** pointermove 一帧的耗时（推理 + 预览重画），来自真实事件 */
+    get sketchPerf() { return perfSummary(); },
+    resetSketchPerf: () => { _perfSamples.length = 0; },
+    /** 草图 2D 坐标 → 屏幕 client 坐标（验收脚本派发触摸事件用） */
+    sketchToScreen2D: (x, y) => { const s = sketch ? sketchToScreen([x, y]) : null; return s ? [Math.round(s[0]), Math.round(s[1])] : null; },
+    /** 验收用：与尺寸面板的 input.onchange 走同一条路（dimEntity + applyDim） */
+    applyDimAt: (index, k, v) => {
+      if (!sketch || !sketch.entities[index]) return false;
+      dimEntity = index;
+      applyDim(k, v);
+      return true;
+    },
+    get lastAutoRelCount() { return lastAutoRelCount; },
+    /** 验收用：强制重画覆盖层 + 状态条（几何/约束被数据层改动后调用；正常操作路径自己会重画） */
+    redrawSketchNow: () => { invalidateSketchAnalysis(); redrawSketch(); },
+    get registeredAppModes() { return [..._appModes.keys()]; },
     enterModelMode, enterViewMode, backToStart, openFile, showStartScreen,
     get viewMesh() { return viewMesh; },
     setFeatTreeOpen, renderFeatTree,
@@ -6684,8 +8276,9 @@ viewer.cam.onLongPress = ({ x, y }) => {
     get featNames() { return history.map((h, i) => featureDisplayName(h, i)); },
     renameFeature: (i, nm) => {
       if (history[i] && nm) {
-        history[i].customName = nm;
-        history[i].label = nm;
+        docCommands.run(`把「${featureDisplayName(history[i], i)}」改名为「${nm}」`, () => {
+          history = replaceStep(history, i, { customName: nm, label: nm });
+        });
         renderFeatTree(); renderTree();
       }
     },

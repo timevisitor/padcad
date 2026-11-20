@@ -1,0 +1,611 @@
+{
+  "v": 1,
+  "kind": "asm",
+  "name": "销轴座",
+  "unit": "mm",
+  "savedAt": "2026-11-10T04:46:36.108Z",
+  "parts": [
+    {
+      "id": "p1",
+      "name": "底座",
+      "source": {
+        "kind": "project",
+        "project": {
+          "v": 1,
+          "name": "底座",
+          "savedAt": "2026-11-10T04:46:36.061Z",
+          "featureCount": 3,
+          "hIndex": 2,
+          "refGeoms": [],
+          "rgSeq": {},
+          "features": [
+            {
+              "label": "底板",
+              "detail": "80×60×10",
+              "icon": "▪",
+              "customName": null,
+              "suppressed": false,
+              "op": {
+                "type": "primitive",
+                "shape": "box",
+                "size": [
+                  80,
+                  60,
+                  10
+                ]
+              }
+            },
+            {
+              "label": "孔1",
+              "detail": "Ø9",
+              "icon": "○",
+              "customName": null,
+              "suppressed": false,
+              "op": {
+                "type": "primitive",
+                "shape": "cylinder",
+                "r": 4.5,
+                "h": 30,
+                "at": [
+                  25,
+                  0,
+                  -10
+                ],
+                "mode": "cut"
+              }
+            },
+            {
+              "label": "孔2",
+              "detail": "Ø9",
+              "icon": "○",
+              "customName": null,
+              "suppressed": false,
+              "op": {
+                "type": "primitive",
+                "shape": "cylinder",
+                "r": 4.5,
+                "h": 30,
+                "at": [
+                  -25,
+                  0,
+                  -10
+                ],
+                "mode": "cut"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "p2",
+      "name": "销",
+      "source": {
+        "kind": "project",
+        "project": {
+          "v": 1,
+          "name": "销",
+          "savedAt": "2026-11-10T04:46:36.061Z",
+          "featureCount": 1,
+          "hIndex": 0,
+          "refGeoms": [],
+          "rgSeq": {},
+          "features": [
+            {
+              "label": "销体",
+              "detail": "Ø8×30",
+              "icon": "▮",
+              "customName": null,
+              "suppressed": false,
+              "op": {
+                "type": "primitive",
+                "shape": "cylinder",
+                "r": 4,
+                "h": 30,
+                "at": [
+                  0,
+                  0,
+                  0
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "p3",
+      "name": "上盖",
+      "source": {
+        "kind": "project",
+        "project": {
+          "v": 1,
+          "name": "上盖",
+          "savedAt": "2026-11-10T04:46:36.061Z",
+          "featureCount": 3,
+          "hIndex": 2,
+          "refGeoms": [],
+          "rgSeq": {},
+          "features": [
+            {
+              "label": "底板",
+              "detail": "60×40×6",
+              "icon": "▪",
+              "customName": null,
+              "suppressed": false,
+              "op": {
+                "type": "primitive",
+                "shape": "box",
+                "size": [
+                  60,
+                  40,
+                  6
+                ]
+              }
+            },
+            {
+              "label": "孔1",
+              "detail": "Ø9",
+              "icon": "○",
+              "customName": null,
+              "suppressed": false,
+              "op": {
+                "type": "primitive",
+                "shape": "cylinder",
+                "r": 4.5,
+                "h": 26,
+                "at": [
+                  25,
+                  0,
+                  -10
+                ],
+                "mode": "cut"
+              }
+            },
+            {
+              "label": "孔2",
+              "detail": "Ø9",
+              "icon": "○",
+              "customName": null,
+              "suppressed": false,
+              "op": {
+                "type": "primitive",
+                "shape": "cylinder",
+                "r": 4.5,
+                "h": 26,
+                "at": [
+                  -25,
+                  0,
+                  -10
+                ],
+                "mode": "cut"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "instances": [
+    {
+      "id": "i1",
+      "partId": "p1",
+      "name": "底座",
+      "transform": {
+        "t": [
+          0,
+          0,
+          0
+        ],
+        "r": [
+          0,
+          0,
+          0,
+          1
+        ]
+      },
+      "fixed": true,
+      "color": null,
+      "visible": true
+    },
+    {
+      "id": "i2",
+      "partId": "p2",
+      "name": "销左",
+      "transform": {
+        "t": [
+          -25,
+          -3.499222340968207e-30,
+          3.1209035356027925e-11
+        ],
+        "r": [
+          0,
+          0,
+          0,
+          1
+        ]
+      },
+      "fixed": false,
+      "color": null,
+      "visible": true
+    },
+    {
+      "id": "i3",
+      "partId": "p2",
+      "name": "销右",
+      "transform": {
+        "t": [
+          25,
+          -3.499222340982169e-30,
+          3.1209035356027925e-11
+        ],
+        "r": [
+          0,
+          0,
+          0,
+          1
+        ]
+      },
+      "fixed": false,
+      "color": null,
+      "visible": true
+    },
+    {
+      "id": "i4",
+      "partId": "p3",
+      "name": "上盖",
+      "transform": {
+        "t": [
+          4.852558240505321e-25,
+          1.1198211335613008e-25,
+          30.000000000156046
+        ],
+        "r": [
+          0,
+          0,
+          0,
+          1
+        ]
+      },
+      "fixed": false,
+      "color": null,
+      "visible": true
+    }
+  ],
+  "mates": [
+    {
+      "id": "m1",
+      "type": "concentric",
+      "a": {
+        "inst": "i1",
+        "ref": {
+          "kind": "axis",
+          "point": [
+            -25,
+            0,
+            -10
+          ],
+          "direction": [
+            0,
+            0,
+            1
+          ],
+          "radius": 4.5
+        }
+      },
+      "b": {
+        "inst": "i2",
+        "ref": {
+          "kind": "axis",
+          "point": [
+            0,
+            0,
+            0
+          ],
+          "direction": [
+            0,
+            0,
+            1
+          ],
+          "radius": 4
+        }
+      },
+      "value": 0,
+      "flip": false,
+      "suppressed": false,
+      "label": "销左同轴"
+    },
+    {
+      "id": "m2",
+      "type": "coincident",
+      "a": {
+        "inst": "i1",
+        "ref": {
+          "kind": "plane",
+          "point": [
+            -1.1102230246251565e-15,
+            -4.2821821216507723e-16,
+            0
+          ],
+          "normal": [
+            0,
+            0,
+            -1
+          ]
+        }
+      },
+      "b": {
+        "inst": "i2",
+        "ref": {
+          "kind": "plane",
+          "point": [
+            1.3322676295501877e-15,
+            2.925044332675243e-16,
+            0
+          ],
+          "normal": [
+            0,
+            0,
+            -1
+          ]
+        }
+      },
+      "value": 0,
+      "flip": true,
+      "suppressed": false,
+      "label": "销左底面平齐（同向）"
+    },
+    {
+      "id": "m3",
+      "type": "concentric",
+      "a": {
+        "inst": "i1",
+        "ref": {
+          "kind": "axis",
+          "point": [
+            25,
+            0,
+            -10
+          ],
+          "direction": [
+            0,
+            0,
+            1
+          ],
+          "radius": 4.5
+        }
+      },
+      "b": {
+        "inst": "i3",
+        "ref": {
+          "kind": "axis",
+          "point": [
+            0,
+            0,
+            0
+          ],
+          "direction": [
+            0,
+            0,
+            1
+          ],
+          "radius": 4
+        }
+      },
+      "value": 0,
+      "flip": false,
+      "suppressed": false,
+      "label": "销右同轴"
+    },
+    {
+      "id": "m4",
+      "type": "coincident",
+      "a": {
+        "inst": "i1",
+        "ref": {
+          "kind": "plane",
+          "point": [
+            -1.1102230246251565e-15,
+            -4.2821821216507723e-16,
+            0
+          ],
+          "normal": [
+            0,
+            0,
+            -1
+          ]
+        }
+      },
+      "b": {
+        "inst": "i3",
+        "ref": {
+          "kind": "plane",
+          "point": [
+            1.3322676295501877e-15,
+            2.925044332675243e-16,
+            0
+          ],
+          "normal": [
+            0,
+            0,
+            -1
+          ]
+        }
+      },
+      "value": 0,
+      "flip": true,
+      "suppressed": false,
+      "label": "销右底面平齐（同向）"
+    },
+    {
+      "id": "m5",
+      "type": "distance",
+      "a": {
+        "inst": "i1",
+        "ref": {
+          "kind": "plane",
+          "point": [
+            -1.1102230246251565e-15,
+            -4.2821821216507723e-16,
+            10
+          ],
+          "normal": [
+            0,
+            0,
+            1
+          ]
+        }
+      },
+      "b": {
+        "inst": "i4",
+        "ref": {
+          "kind": "plane",
+          "point": [
+            -2.220446049250313e-16,
+            5.580012551667654e-16,
+            0
+          ],
+          "normal": [
+            0,
+            0,
+            -1
+          ]
+        }
+      },
+      "value": 20,
+      "flip": false,
+      "suppressed": false,
+      "label": "上盖离底座顶面 20"
+    },
+    {
+      "id": "m6",
+      "type": "concentric",
+      "a": {
+        "inst": "i2",
+        "ref": {
+          "kind": "axis",
+          "point": [
+            0,
+            0,
+            0
+          ],
+          "direction": [
+            0,
+            0,
+            1
+          ],
+          "radius": 4
+        }
+      },
+      "b": {
+        "inst": "i4",
+        "ref": {
+          "kind": "axis",
+          "point": [
+            -25,
+            0,
+            -10
+          ],
+          "direction": [
+            0,
+            0,
+            1
+          ],
+          "radius": 4.5
+        }
+      },
+      "value": 0,
+      "flip": false,
+      "suppressed": false,
+      "label": "上盖左孔套销左"
+    },
+    {
+      "id": "m7",
+      "type": "concentric",
+      "a": {
+        "inst": "i3",
+        "ref": {
+          "kind": "axis",
+          "point": [
+            0,
+            0,
+            0
+          ],
+          "direction": [
+            0,
+            0,
+            1
+          ],
+          "radius": 4
+        }
+      },
+      "b": {
+        "inst": "i4",
+        "ref": {
+          "kind": "axis",
+          "point": [
+            25,
+            0,
+            -10
+          ],
+          "direction": [
+            0,
+            0,
+            1
+          ],
+          "radius": 4.5
+        }
+      },
+      "value": 0,
+      "flip": false,
+      "suppressed": false,
+      "label": "上盖右孔套销右"
+    }
+  ],
+  "explode": [
+    {
+      "id": "e1",
+      "instance": "i1",
+      "dir": [
+        0,
+        0,
+        -1
+      ],
+      "distance": 40,
+      "label": "底座下移"
+    },
+    {
+      "id": "e2",
+      "instance": "i2",
+      "dir": [
+        0,
+        0,
+        1
+      ],
+      "distance": 55,
+      "label": "左销上移"
+    },
+    {
+      "id": "e3",
+      "instance": "i3",
+      "dir": [
+        0,
+        0,
+        1
+      ],
+      "distance": 55,
+      "label": "右销上移"
+    },
+    {
+      "id": "e4",
+      "instance": "i4",
+      "dir": [
+        0,
+        0,
+        1
+      ],
+      "distance": 70,
+      "label": "上盖上移"
+    }
+  ]
+}

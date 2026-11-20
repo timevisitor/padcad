@@ -8,6 +8,8 @@ import { normalizePatternOp, applyPatternOp } from "./src/pattern.js";
 import { rebuild } from "./src/replay.js";
 import { cacheRebuild } from "./src/project.js";
 import { markSnapshot } from "./src/history-cache.js";
+import { replaceStep, appendStep, rebuildInto } from "./src/param-edit.js";
+import { sandboxCommands } from "./sandbox-command-stub.mjs";
 
 setOC(await opencascade({wasmBinary:fs.readFileSync("./public/replicad_single.wasm")}));
 const source=fs.readFileSync("./src/main.js","utf8");
@@ -29,8 +31,9 @@ function editor(rows=[feature()],cursor=rows.length-1){
   const c=vm.createContext({history,hIndex:cursor,shape:history[cursor].shape,mode:"select",appMode:"model",
     patternSession:null,normalizePatternOp,applyPatternOp,rebuild,cacheRebuild,markSnapshot,performance,
     FEATURE_ICON:{},selectFace:noop,refresh:noop,renderTree:noop,
-    featureDisplayName:h=>h.label,
+    featureDisplayName:h=>h.label,replaceStep,appendStep,rebuildInto,
   });
+  c.docCommands=sandboxCommands(c);
   c.patternPanel={
     visible:false,draft:null,lastStatus:"",isError:false,
     open({op,sources,editing}){this.visible=true;this.draft=structuredClone(op);this.sources=sources;this.editing=editing;},

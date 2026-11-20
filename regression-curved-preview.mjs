@@ -14,6 +14,8 @@ import * as OPS from "./src/ops.js";
 import { solveSketch } from "./src/solver.js";
 import { rebuild, RefLost } from "./src/replay.js";
 import { cacheRebuild, projectDefinition, restoreProject } from "./src/project.js";
+import { replaceStep, appendStep, rebuildInto } from "./src/param-edit.js";
+import { sandboxCommands } from "./sandbox-command-stub.mjs";
 
 setOC(await opencascade({ wasmBinary: fs.readFileSync("./public/replicad_single.wasm") }));
 const source = fs.readFileSync("./src/main.js", "utf8");
@@ -76,7 +78,9 @@ function fixture({ axis = "Z", downstream = false, cursor = null, multiple = fal
     solveSketch, rebuild, rebuildPreview, cacheRebuild, RefLost, performance, findSurfaceDrivers, readCylinderFace,
     curvedPreviewResult: null,
     meshOf, api: { measureVolume }, bbox: null, canvas: {}, renderTree: noop, cancelEdit: noop,
+    replaceStep, appendStep, rebuildInto,
   });
+  c.docCommands = sandboxCommands(c);
   const frames = new Map(); let frameId = 0;
   c.requestAnimationFrame = cb => { frames.set(++frameId, cb); return frameId; };
   c.cancelAnimationFrame = id => frames.delete(id);
@@ -280,4 +284,5 @@ test("invalid starter hole dimensions reject rebuilding while old definitions ke
 });
 
 // Keep a reproducible document for independent browser validation; no user document is modified.
+fs.mkdirSync("out", { recursive: true });
 fs.writeFileSync("out/surface-driver-example.padcad.json", JSON.stringify(projectDefinition("圆孔与双柱手柄验证", threeCircleHistory(), 2), null, 2));

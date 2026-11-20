@@ -1,18 +1,21 @@
 /**
  * 2D 草图约束求解器
  *
- * 参考 jsketcher 的做法（Levenberg-Marquardt + 阻尼最小二乘），
- * 但用**数值 Jacobian** 而不是手写解析梯度：
- * 参数规模很小（典型几十个自由度），数值微分的额外开销可以忽略，
- * 而"给每种约束手写解析梯度"恰恰是这类代码最容易出错的地方 ——
- * 梯度写错了求解器不会报错，只会静默地收敛到错误位置。
- *
  * 模型：草图 = 一组自由度(Param) + 一组约束(Constraint)。
  * 每个约束给出一个误差标量（要让它趋近 0），求解器最小化 0.5·Σerror²。
  *
  * 欠约束（方程少于未知数）是正常的 —— 用户不可能一开始就把尺寸标全，
  * 这时解法是无穷多组，求解器只保证"往最近的合法位置走"，不会乱跳。
  * 过约束/自相矛盾（比如同时要求 w=20 和 w=30）会检测出来并报错。
+ *
+ * v6 的两处改动（都保留 v5 的调用方式，只加不改）：
+ *   1. **分量残差**：求解器内部把每条约束拆成 1~k 条标量方程（equations()）。
+ *      对 hypot 型约束（重合/固定点/中点/对称/固定整个图元），error()² 恰好等于分量平方和，
+ *      所以目标函数**完全不变**，但数值性质天差地别：两条线段「水平 + 端点重合」v5 要 125 次迭代，
+ *      拆成分量后 2 次（见 regression-sketch-solver.mjs 与 智能草图/solver-bench.json）。
+ *   2. **DogLeg 默认 + LM 兜底**：省掉 LM 每步的 λ 试错扫描；DogLeg 没解到位时自动回落 LM。
+ *
+ * 约束定义仍是可序列化纯数据（buildConstraint），旧工程照常重放。
  */
 
 /** 一个可求解的自由度：用访问器包住实体里的某个数字 */
@@ -36,7 +39,12 @@ export class PointRef {
 /** 把草图实体展开成自由度列表 */
 export function collectParams(entities) {
   const params = [];
-  const add = (get, set, name) => params.push(new Param(get, set, name));
+  // 每个参数都带 entity 下标 —— 稀疏 Jacobian 与「按图元着色」都要用它把参数归到图元上
+  const add = (get, set, name, entity = null) => {
+    const p = new Param(get, set, name);
+    p.entity = entity;
+    params.push(p);
+  };
 
   entities.forEach((e, i) => {
     /*
@@ -48,18 +56,18 @@ export function collectParams(entities) {
      */
     if (e.ref) return;
     if (e.kind === "rect") {
-      add(() => e.c[0], (v) => { e.c[0] = v; }, `#${i}.cx`);
-      add(() => e.c[1], (v) => { e.c[1] = v; }, `#${i}.cy`);
-      add(() => e.w, (v) => { e.w = v; }, `#${i}.w`);
-      add(() => e.h, (v) => { e.h = v; }, `#${i}.h`);
+      add(() => e.c[0], (v) => { e.c[0] = v; }, `#${i}.cx`, i);
+      add(() => e.c[1], (v) => { e.c[1] = v; }, `#${i}.cy`, i);
+      add(() => e.w, (v) => { e.w = v; }, `#${i}.w`, i);
+      add(() => e.h, (v) => { e.h = v; }, `#${i}.h`, i);
     } else if (e.kind === "circle") {
-      add(() => e.c[0], (v) => { e.c[0] = v; }, `#${i}.cx`);
-      add(() => e.c[1], (v) => { e.c[1] = v; }, `#${i}.cy`);
-      add(() => e.r, (v) => { e.r = v; }, `#${i}.r`);
+      add(() => e.c[0], (v) => { e.c[0] = v; }, `#${i}.cx`, i);
+      add(() => e.c[1], (v) => { e.c[1] = v; }, `#${i}.cy`, i);
+      add(() => e.r, (v) => { e.r = v; }, `#${i}.r`, i);
     } else if (e.kind === "polyline") {
       e.pts.forEach((_, k) => {
-        add(() => e.pts[k][0], (v) => { e.pts[k][0] = v; }, `#${i}.p${k}.x`);
-        add(() => e.pts[k][1], (v) => { e.pts[k][1] = v; }, `#${i}.p${k}.y`);
+        add(() => e.pts[k][0], (v) => { e.pts[k][0] = v; }, `#${i}.p${k}.x`, i);
+        add(() => e.pts[k][1], (v) => { e.pts[k][1] = v; }, `#${i}.p${k}.y`, i);
       });
     }
   });
@@ -108,6 +116,17 @@ export class Constraint {
   constructor(params, label) { this.params = params; this._label = label; }
   error() { throw new Error("约束未实现 error()"); }
   get label() { return this._label; }
+  /**
+   * 这个约束对应的**标量方程**列表（诊断用，不参与求解）。
+   *
+   * 为什么需要：error() 是单个残差（求解器只要一个标量），但有的约束一条残差
+   * 其实代表 2~k 个独立方程 —— Coincident 的 hypot(dx,dy)、PointFixed 的 hypot、
+   * Midpoint、Symmetric、MultiFixed 都是。
+   * 用 error() 的条数当方程数会**低估秩**，于是"完全定义"的草图会被算成还剩 1~2 个自由度
+   * （实测：矩形标完宽高 + 固定中心，n−m 给出 1，真实是 0）。
+   * 所以诊断必须按分量化后的方程行数算，求解仍走 error()。
+   */
+  equations() { return [this.error()]; }
 }
 
 /** 两点距离 = value */
@@ -144,6 +163,8 @@ export class Equal extends Constraint {
 export class PointFixed extends Constraint {
   constructor(p, x, y, label = "固定点") { super([p.x, p.y], label); this.p = p; this.x = x; this.y = y; }
   error() { return Math.hypot(this.p.vx - this.x, this.p.vy - this.y); }
+  // 钉住一个点 = 两个独立方程（x、y 各一条）。error() 用 hypot 只是为了残差单调好看
+  equations() { return [this.p.vx - this.x, this.p.vy - this.y]; }
 }
 
 /** 圆与直线相切：圆心到直线距离 = 半径 */
@@ -228,6 +249,11 @@ export class Midpoint extends Constraint {
     const mx = (this.p1.vx + this.p2.vx) / 2, my = (this.p1.vy + this.p2.vy) / 2;
     return Math.hypot(this.p.vx - mx, this.p.vy - my);
   }
+  equations() { return this._split(); }
+  _split() {
+    const mx = (this.p1.vx + this.p2.vx) / 2, my = (this.p1.vy + this.p2.vy) / 2;
+    return [this.p.vx - mx, this.p.vy - my];
+  }
 }
 
 /**
@@ -253,12 +279,38 @@ export class Symmetric extends Constraint {
     const perp = mx * uy - my * ux;
     return Math.hypot(along, perp);
   }
+  equations() {
+    const ax = this.p2.vx - this.p1.vx, ay = this.p2.vy - this.p1.vy;
+    const L = Math.hypot(ax, ay);
+    if (L < 1e-9) return [0, 0];
+    const ux = ax / L, uy = ay / L;
+    const vx = this.b.vx - this.a.vx, vy = this.b.vy - this.a.vy;
+    const mx = (this.a.vx + this.b.vx) / 2 - this.p1.vx;
+    const my = (this.a.vy + this.b.vy) / 2 - this.p1.vy;
+    return [vx * ux + vy * uy, mx * uy - my * ux];
+  }
 }
 
 /** 两个点重合（点到点重合） */
 export class Coincident extends Constraint {
   constructor(a, b) { super([a.x, a.y, b.x, b.y], "重合"); this.a = a; this.b = b; }
   error() { return Math.hypot(this.a.vx - this.b.vx, this.a.vy - this.b.vy); }
+  // 重合 = 两个方程（x 相等、y 相等）
+  equations() { return [this.a.vx - this.b.vx, this.a.vy - this.b.vy]; }
+}
+
+/**
+ * 两条线段等长：|P2−P1| = |P4−P3|
+ * SolidWorks 的「相等」用在两条直线上就是这个语义（我们的 equal 只管 r/w/h 三个参数）。
+ * 诊断上只算一条方程，求解上也只一条 —— 长度相等本身就是一个标量条件。
+ */
+export class EqualLength extends Constraint {
+  constructor(p1, p2, p3, p4) { super([p1.x, p1.y, p2.x, p2.y, p3.x, p3.y, p4.x, p4.y], "等长"); this.p1 = p1; this.p2 = p2; this.p3 = p3; this.p4 = p4; }
+  error() {
+    const L1 = Math.hypot(this.p2.vx - this.p1.vx, this.p2.vy - this.p1.vy);
+    const L2 = Math.hypot(this.p4.vx - this.p3.vx, this.p4.vy - this.p3.vy);
+    return L1 - L2;
+  }
 }
 
 /** 点到固定点（常量坐标）的距离 = value —— 用于标注"到模型投影点"的尺寸 */
@@ -349,6 +401,8 @@ export class MultiFixed extends Constraint {
     }
     return Math.sqrt(s);
   }
+  // 「固定整个元素」= 每个自由度一条方程（矩形 4 条、圆 3 条、折线 2×点数条）
+  equations() { return this.params.map((p, i) => p.value - this.values[i]); }
 }
 
 // ---------------------------------------------------------------- 可序列化的约束描述
@@ -458,6 +512,11 @@ export function buildConstraint(entities, spec) {
       const l1 = lin(spec.l1), l2 = lin(spec.l2);
       if (!l1 || !l2) return null;
       return new Perpendicular(l1[0], l1[1], l2[0], l2[1]);
+    }
+    case "equalLength": {
+      const l1 = lin(spec.l1), l2 = lin(spec.l2);
+      if (!l1 || !l2) return null;
+      return new EqualLength(l1[0], l1[1], l2[0], l2[1]);
     }
     case "midpoint": {
       const p = pt(spec.p), l = lin(spec.l);
@@ -647,6 +706,8 @@ function checkConstraintDefinition(entities, spec) {
       line(spec.l1, "l1"); line(spec.l2, "l2");
       if (spec.type === "angle") number(spec.value, "value");
       break;
+    case "equalLength":
+      line(spec.l1, "l1"); line(spec.l2, "l2"); break;
     case "midpoint":
       point(spec.p, "p"); line(spec.l, "l"); break;
     case "symmetric":
@@ -719,7 +780,19 @@ export function solveSketch(entities, specs, opts = {}) {
     };
   }
   const params = collectParams(entities);
-  const res = solve(params, constraints, opts);
+  /*
+   * 两件新东西（v6 智能草图）：
+   * 1) paramDeps —— 「参数 → 引用它的约束」稀疏表，Jacobian 只算相关行（数值与全算逐位相同）；
+   * 2) diagnose —— 解完顺手算 rank(J)，返回**真实**自由度（dofApproximate:false）。
+   *    旧的 n−m 估算在“约束相关”和“一条残差代表两个方程”两种情况下都会算错。
+   * 不需要诊断的调用方（拖动、批量重放）传 opts.exactDof = false 可跳掉这一步。
+   */
+  const paramDeps = buildParamDeps(params, entities, specs);
+  const res = solve(params, constraints, {
+    ...opts,
+    paramDeps,
+    diagnose: opts.exactDof !== false,
+  });
   return { ...res, invalidConstraints: [], backup, entities, params, constraints };
 }
 // ---------------------------------------------------------------- 线性代数
@@ -747,86 +820,543 @@ function solveLinear(A, b) {
   return x.every((v) => isFinite(v)) ? x : null;
 }
 
+const nowMs = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+
+function maxAbsElement(A) {
+  let mx = 0;
+  for (let i = 0; i < A.length; i++) {
+    const row = A[i];
+    for (let j = 0; j < row.length; j++) {
+      const v = Math.abs(row[j]);
+      if (v > mx) mx = v;
+    }
+  }
+  return mx;
+}
+
+/**
+ * 带列主元的 Householder QR —— 只要秩和 R（不显式构造 Q）。
+ *
+ * 为什么用 QR 而不是 SVD：planegcs 在 GCS.cpp:4855-4890 的注释里把账算得很清楚 ——
+ * QR 便宜、能给出秩、全主元时还能追踪**列**（= 约束或参数）之间的依赖关系；
+ * SVD 对秩更稳但贵一到两个数量级。我们的规模（几十~几百）用全主元 QR 足够。
+ *
+ * 秩判据用**相对阈值**：数值 Jacobian 的每个元素只有 ~1e-10 的相对精度，
+ * 绝对阈值在“坐标量级 1000mm”的草图上会把真实的方向误判成噪声。
+ *
+ * @returns {{rank:number, R:number[][], perm:number[], threshold:number}}
+ */
+export function qrRank(A, m, n, relTol = 1e-8) {
+  const R = new Array(m);
+  for (let i = 0; i < m; i++) R[i] = Array.from(A[i]);
+  const perm = new Array(n);
+  for (let i = 0; i < n; i++) perm[i] = i;
+  const threshold = Math.max(1e-12, relTol * Math.max(1, maxAbsElement(R)));
+  let rank = 0;
+  const steps = Math.min(m, n);
+  for (let k = 0; k < steps; k++) {
+    let bestJ = -1, bestNorm2 = 0;
+    for (let j = k; j < n; j++) {
+      let s = 0;
+      for (let i = k; i < m; i++) s += R[i][j] * R[i][j];
+      if (s > bestNorm2) { bestNorm2 = s; bestJ = j; }
+    }
+    const sigma = Math.sqrt(bestNorm2);
+    if (bestJ < 0 || !(sigma > threshold)) break;      // 剩下的列全在噪声水平 → 秩到此为止
+    if (bestJ !== k) {
+      for (let i = 0; i < m; i++) { const t = R[i][k]; R[i][k] = R[i][bestJ]; R[i][bestJ] = t; }
+      const tp = perm[k]; perm[k] = perm[bestJ]; perm[bestJ] = tp;
+    }
+    const alpha = R[k][k] > 0 ? -sigma : sigma;
+    const v = new Float64Array(m - k);
+    v[0] = R[k][k] - alpha;
+    for (let i = k + 1; i < m; i++) v[i - k] = R[i][k];
+    let vv = 0;
+    for (let i = 0; i < v.length; i++) vv += v[i] * v[i];
+    if (vv > 0) {
+      const beta = 2 / vv;
+      for (let j = k; j < n; j++) {
+        let s = 0;
+        for (let i = k; i < m; i++) s += v[i - k] * R[i][j];
+        const f = beta * s;
+        if (f !== 0) for (let i = k; i < m; i++) R[i][j] -= f * v[i - k];
+      }
+    }
+    R[k][k] = alpha;
+    for (let i = k + 1; i < m; i++) R[i][k] = 0;      // 消掉下三角的浮点残渣
+    rank++;
+  }
+  return { rank, R, perm, threshold };
+}
+
+/**
+ * 把 R 里「主元之上仍残留的非零」消干净，让依赖关系显式出现在超秩列上。
+ * 对应 planegcs 的 eliminateNonZerosOverPivotInUpperTriangularMatrix()。
+ */
+function eliminateAbovePivot(R, rank, cols) {
+  for (let k = rank - 1; k >= 0; k--) {
+    const piv = R[k][k];
+    if (!(Math.abs(piv) > 1e-300)) continue;
+    for (let i = 0; i < k; i++) {
+      const f = R[i][k] / piv;
+      if (f === 0) continue;
+      for (let j = k; j < cols; j++) R[i][j] -= f * R[k][j];
+    }
+  }
+}
+
+/**
+ * 找出**线性相关的方程行**（= 冗余或冲突的约束）。
+ *
+ * 做法与 planegcs identifyConflictingRedundantConstraints 一致：对 Jᵀ 做全主元 QR，
+ * 前 rank 列是独立的，第 rank 列之后每一列就是一个“多余”的方程；
+ * 它在 R 里非零的那些主元行就是它依赖的方程 —— 这一组就是 conflict group。
+ *
+ * @returns {{rank:number, groups:number[][]}} groups 里是**方程行号**
+ */
+export function dependentRowGroups(J, m, n, relTol = 1e-8) {
+  if (!m || !n) return { rank: 0, groups: [] };
+  const Jt = new Array(n);
+  for (let j = 0; j < n; j++) {
+    const row = new Array(m);
+    for (let i = 0; i < m; i++) row[i] = J[i][j];
+    Jt[j] = row;
+  }
+  const { rank, R, perm } = qrRank(Jt, n, m, relTol);
+  if (rank >= m) return { rank, groups: [] };
+  eliminateAbovePivot(R, rank, m);
+  const groups = [];
+  for (let j = rank; j < m; j++) {
+    const members = [];
+    for (let row = 0; row < rank; row++) {
+      if (Math.abs(R[row][j]) > 1e-10) members.push(perm[row]);
+    }
+    members.push(perm[j]);
+    groups.push(members);
+  }
+  return { rank, groups };
+}
+
+/**
+ * Jacobian 的零空间（J x = 0 的解空间）—— 它描述“图形还能往哪儿动”。
+ * 由 QR 的 R 直接回代得到：自由列取 1，主元列由 R11 z = −R12 e_c 解出。
+ */
+export function nullSpace(J, m, n, relTol = 1e-8) {
+  if (!n) return { rank: 0, basis: [] };
+  const { rank, R, perm } = qrRank(J, m, n, relTol);
+  const basis = [];
+  for (let c = rank; c < n; c++) {
+    const x = new Array(n).fill(0);
+    const z = new Array(rank).fill(0);
+    for (let i = rank - 1; i >= 0; i--) {
+      let s = R[i][c] || 0;
+      for (let k = i + 1; k < rank; k++) s += R[i][k] * z[k];
+      z[i] = Math.abs(R[i][i]) > 1e-300 ? -s / R[i][i] : 0;
+    }
+    for (let i = 0; i < rank; i++) x[perm[i]] = z[i];
+    x[perm[c]] = 1;
+    basis.push(x);
+  }
+  return { rank, basis };
+}
+
+/**
+ * 每个参数的「可动度」∈[0,1]：零空间基做 Gram-Schmidt 正化后，分量平方和的平方根。
+ * 0 = 这个自由度被完全定死（黑），>0 = 还能动（蓝）。比“单看某个基向量”严格：
+ * 只有**所有**零空间方向在这一维都为 0，这个参数才是真的不动。
+ */
+export function mobilityOf(basis, n) {
+  const mob = new Array(n).fill(0);
+  if (!basis.length) return mob;
+  const ortho = [];
+  for (const v of basis) {
+    const w = v.slice();
+    for (let pass = 0; pass < 2; pass++) {
+      for (const q of ortho) {
+        let d = 0;
+        for (let i = 0; i < n; i++) d += w[i] * q[i];
+        if (d === 0) continue;
+        for (let i = 0; i < n; i++) w[i] -= d * q[i];
+      }
+    }
+    let norm = 0;
+    for (let i = 0; i < n; i++) norm += w[i] * w[i];
+    norm = Math.sqrt(norm);
+    if (norm > 1e-9) {
+      for (let i = 0; i < n; i++) w[i] /= norm;
+      ortho.push(w);
+    }
+  }
+  for (const w of ortho) for (let i = 0; i < n; i++) mob[i] += w[i] * w[i];
+  for (let i = 0; i < n; i++) mob[i] = Math.sqrt(mob[i]);
+  return mob;
+}
+
+// ---------------------------------------------------------------- 方程行（诊断用）
+/**
+ * 把一个约束拆成若干**标量方程行**。行数才是它真正占用的“方程数”，
+ * 用于秩/自由度分析；求解仍走 error()（一个标量残差），行为完全不变。
+ */
+export function constraintEquationRows(constraints) {
+  const rows = [];
+  constraints.forEach((c, ci) => {
+    let count = 1;
+    try {
+      const eqs = c.equations();
+      if (Array.isArray(eqs) && eqs.length) count = eqs.length;
+    } catch (_) { count = 1; }
+    for (let k = 0; k < count; k++) rows.push({ ci, k });
+  });
+  return rows;
+}
+
+/**
+ * 分量化方程的数值 Jacobian（中心差分，步长与求解器一致）。
+ * deps（可选）= 每个参数依赖的**约束下标**，用来只算相关行 —— 稀疏化，
+ * 数学上与逐条全算完全等价（回归 regression-sketch-dof.mjs 有逐元素比对）。
+ */
+export function equationJacobian(params, constraints, rows, deps = null) {
+  const n = params.length;
+  const J = rows.map(() => new Array(n).fill(0));
+  const byCi = new Map();
+  rows.forEach((row, idx) => {
+    if (!byCi.has(row.ci)) byCi.set(row.ci, []);
+    byCi.get(row.ci).push(idx);
+  });
+  const cis = [...byCi.keys()];
+  for (let j = 0; j < n; j++) {
+    const p = params[j];
+    const old = p.value;
+    const h = Math.max(1e-6, Math.abs(old) * 1e-6);
+    const list = deps ? deps[j] ?? [] : cis;
+    if (!list.length) continue;
+    const plus = new Map();
+    p.value = old + h;
+    for (const ci of list) { try { plus.set(ci, constraints[ci].equations()); } catch (_) { plus.set(ci, []); } }
+    const minus = new Map();
+    p.value = old - h;
+    for (const ci of list) { try { minus.set(ci, constraints[ci].equations()); } catch (_) { minus.set(ci, []); } }
+    p.value = old;
+    for (const ci of list) {
+      const ep = plus.get(ci) || [], em = minus.get(ci) || [];
+      for (const rIdx of byCi.get(ci) || []) {
+        const k = rows[rIdx].k;
+        J[rIdx][j] = ((ep[k] ?? 0) - (em[k] ?? 0)) / (2 * h);
+      }
+    }
+  }
+  return J;
+}
+
+/**
+ * 系统诊断：真实自由度、秩、以及“哪些约束是多余的”。
+ * @returns {{rank:number, dof:number, dofApproximate:false, equations:number, dependent:Array, mobility:number[]}}
+ */
+export function diagnoseSystem(params, constraints, opts = {}) {
+  const n = params.length;
+  const relTol = opts.rankTol ?? 1e-8;
+  const rows = constraintEquationRows(constraints);
+  const J = equationJacobian(params, constraints, rows, opts.paramDeps || null);
+  const { rank } = qrRank(J, rows.length, n, relTol);
+  const { groups } = dependentRowGroups(J, rows.length, n, relTol);
+  const { basis } = nullSpace(J, rows.length, n, relTol);
+  const mobility = mobilityOf(basis, n);
+  // 方程行 → 约束下标去重；同一组的成员一起去重
+  const seen = new Map();
+  groups.forEach((g, gi) => {
+    const cset = [];
+    for (const r of g) {
+      const ci = rows[r]?.ci;
+      if (ci != null && !cset.includes(ci)) cset.push(ci);
+    }
+    cset.forEach((ci) => {
+      if (!seen.has(ci)) seen.set(ci, { index: ci, group: cset.slice(), groupIndex: gi });
+    });
+  });
+  return {
+    rank,
+    dof: Math.max(0, n - rank),
+    dofApproximate: false,
+    equations: rows.length,
+    dependent: [...seen.values()].sort((a, b) => a.index - b.index),
+    mobility,
+    nullSpaceDim: Math.max(0, n - rank),
+  };
+}
+
+/**
+ * 一个 spec 引用了哪些图元下标（常量引用 {e:null, at} 不算）。
+ * 用途：给数值 Jacobian 建“参数 → 约束”的稀疏依赖表。
+ */
+export function specEntities(spec) {
+  const out = new Set();
+  const ref = (r) => { if (r && typeof r === "object" && Number.isInteger(r.e)) out.add(r.e); };
+  switch (spec?.type) {
+    case "fixed": case "fix": ref(spec); break;
+    case "equal": ref({ e: spec.e }); ref({ e: spec.f }); break;
+    case "distance": case "horizontal": case "vertical": case "coincident":
+      ref(spec.a); ref(spec.b); break;
+    case "fixedPoint": case "distToFixedPoint": case "distToFixedLine": ref(spec.p); break;
+    case "angle": case "parallel": case "perpendicular": case "equalLength":
+      ref(spec.l1); ref(spec.l2); break;
+    case "midpoint": ref(spec.p); ref(spec.l); break;
+    case "symmetric": ref(spec.a); ref(spec.b); ref(spec.l); break;
+    case "angleToFixedLine": ref(spec.l); break;
+    case "pointToLine": ref(spec.p); ref(spec.l1); ref(spec.l2); break;
+    case "tangent": ref({ e: spec.e }); ref(spec.l); break;
+    default: break;
+  }
+  return out;
+}
+
+/**
+ * 建「参数 → 依赖的约束下标」表。只按**图元**粒度筛：同一图元的参数可能被任意一条
+ * 引用它的约束影响，所以一张表就够，且绝不会漏（比按参数名匹配安全）。
+ */
+export function buildParamDeps(params, entities, specs) {
+  if (!Array.isArray(specs)) return null;
+  const touched = specs.map((s) => specEntities(s));
+  return params.map((p) => {
+    const e = p.entity;
+    const list = [];
+    if (e == null) return list;
+    for (let i = 0; i < touched.length; i++) if (touched[i].has(e)) list.push(i);
+    return list;
+  });
+}
+
+// ---------------------------------------------------------------- 求解核心
+/*
+ * 求解器内部用的是**分量残差**（每条约束可拆成 1~k 条标量方程），而不是 error() 的标量残差。
+ *
+ * 为什么这不是“改语义”而是“改配方”：对 hypot 型约束（Coincident / PointFixed / Midpoint /
+ * Symmetric / MultiFixed），error()² 恰好等于分量平方和 —— 目标函数 **一模一样**
+ * （最小化 Σ error² ≡ 最小化 Σ 分量²），区别只在数值上：
+ *   - 标量 hypot 在残差趋 0 处是**锥形**的，二阶导数发散，LM 只能线性收敛
+ *     （实测：两条线段「水平 + 端点重合」这种几乎线性的方程组，标量残差要 125 次迭代才到 1e-9，
+ *      加长到 7 段就干脆卡在 8e-4 不动）；
+ *   - 拆成分量后每个方程都是光滑的一次式，同样的场景 2 次迭代就到 1e-9。
+ * planegcs 也是这么做的（一条几何约束编译成多条 solver 方程）。
+ */
+
+/** 每条约束占几行方程（1~k），以及行号起点 */
+function buildRowMap(constraints) {
+  const rowStart = new Int32Array(constraints.length + 1);
+  let rows = 0;
+  for (let i = 0; i < constraints.length; i++) {
+    rowStart[i] = rows;
+    let count = 1;
+    try {
+      const eq = constraints[i].equations();
+      if (Array.isArray(eq) && eq.length) count = eq.length;
+    } catch (_) { count = 1; }
+    rows += count;
+  }
+  rowStart[constraints.length] = rows;
+  return { rowStart, rows };
+}
+
+/** 取一条约束的分量方程；坏约束退回标量残差（求解器不该因为诊断接口而崩） */
+function equationsOf(c) {
+  try {
+    const eq = c.equations();
+    if (Array.isArray(eq) && eq.length) return eq;
+  } catch (_) { /* 退回标量 */ }
+  return [c.error()];
+}
+
+function residualVector(constraints, rowStart, rows) {
+  const out = new Array(rows);
+  for (let i = 0; i < constraints.length; i++) {
+    const eq = equationsOf(constraints[i]);
+    for (let r = rowStart[i]; r < rowStart[i + 1]; r++) out[r] = eq[r - rowStart[i]] ?? 0;
+  }
+  return out;
+}
+
+/**
+ * 数值 Jacobian（中心差分）。
+ * 步长必须取 ~1e-6：太小（1e-7 及以下）会让分子 (rp-rm) 落进浮点抵消区，
+ * Jacobian 只剩 1e-9 左右的精度，残差就再也降不下去了 —— 实测卡在 3e-6。
+ * 中心差分的最优步长量级是 eps^(1/3) ≈ 6e-6。
+ *
+ * deps 非空时只对被该参数所属图元引用的那些约束求值（稀疏）：条目数值与全算**逐位相同**，
+ * 省掉的只是无关约束的重复计算（50 图元规模下 Jacobian 时间约降到 1/4）。
+ */
+function buildJacobian(params, constraints, n, rowStart, rows, deps) {
+  const J = new Array(rows);
+  for (let i = 0; i < rows; i++) J[i] = new Array(n).fill(0);
+  const allIdx = constraints.map((_, i) => i);
+  for (let j = 0; j < n; j++) {
+    const p = params[j];
+    const old = p.value;
+    const h = Math.max(1e-6, Math.abs(old) * 1e-6);
+    const idxs = deps ? deps[j] : allIdx;
+    if (!idxs.length) continue;                     // 没有任何约束引用这个图元 → 整列为 0
+    p.value = old + h;
+    const plus = idxs.map((i) => equationsOf(constraints[i]));
+    p.value = old - h;
+    const minus = idxs.map((i) => equationsOf(constraints[i]));
+    p.value = old;
+    for (let t = 0; t < idxs.length; t++) {
+      const ci = idxs[t], s = rowStart[ci], e = rowStart[ci + 1];
+      const ep = plus[t], em = minus[t];
+      for (let r = s; r < e; r++) J[r][j] = ((ep[r - s] ?? 0) - (em[r - s] ?? 0)) / (2 * h);
+    }
+  }
+  return J;
+}
+
+/** 每条约束的残差是否超阈（冲突标签用） */
+function conflictLabels(constraints, rowStart, rv, tol) {
+  const out = [];
+  for (let i = 0; i < constraints.length; i++) {
+    for (let r = rowStart[i]; r < rowStart[i + 1]; r++) {
+      if (Math.abs(rv[r]) > tol) { out.push(constraints[i].label); break; }
+    }
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------- 求解
 /**
- * Levenberg-Marquardt。
+ * 求解入口。默认算法是 **DogLeg 信赖域**（v6 换的默认），失败自动回落 LM；
+ * 传 opts.algorithm = "lm" 可强制回到 v5 的算法（残差同样是分量形式）。
+ * 对比数据见 智能草图/solver-bench.json。
+ *
  * @param params       自由度列表
  * @param constraints  约束列表
  * @param opts.maxIter 最大迭代
- * @param opts.tol     残差平方和收敛阈值
+ * @param opts.tolErr  最大残差收敛阈值
+ * @param opts.algorithm  "dogleg"（默认）| "lm"
+ * @param opts.paramDeps  每个参数依赖的约束下标（稀疏 Jacobian）
+ * @param opts.leastNorm  m < n 时用最小范数步（线性方程组从 n 阶降到 m 阶）
+ * @param opts.diagnose   true 时附带秩/真实自由度诊断（dofApproximate:false）
  */
 export function solve(params, constraints, opts = {}) {
   const maxIter = opts.maxIter ?? 200;
-  const tolErr = opts.tolErr ?? 1e-9;      // 判据是「最大残差」，不是 cost
+  const tolErr = opts.tolErr ?? 1e-9;
+  const okTol = opts.okTol ?? 1e-6;
   const n = params.length, m = constraints.length;
-  const t0 = (typeof performance !== "undefined" ? performance.now() : Date.now());
+  const t0 = nowMs();
+  const deps = opts.paramDeps || null;
+  const { rowStart, rows } = buildRowMap(constraints);
+
+  function finish(out) {
+    if (!opts.diagnose) return out;
+    try {
+      const d = diagnoseSystem(params, constraints, { paramDeps: deps, rankTol: opts.rankTol });
+      return { ...out, rank: d.rank, equations: d.equations, dof: d.dof, dofApproximate: false,
+        dependent: d.dependent, mobility: d.mobility };
+    } catch (error) {
+      return out;                                        // 诊断失败不影响求解结论
+    }
+  }
   const invalidResult = (conflicts) => ({ ok: false, iterations: 0, cost: Infinity, ms: 0, maxErr: Infinity,
     dof: Math.max(0, n - m), dofApproximate: true, conflicted: true, conflicts });
-  if (params.some(param => !Number.isFinite(param.value))) return invalidResult(["草图参数包含非有限数值"]);
-  if (!m) return { ok: true, iterations: 0, cost: 0, ms: 0, maxErr: 0, dof: n, dofApproximate: true, conflicted: false, conflicts: [] };
+  if (params.some((param) => !Number.isFinite(param.value))) return invalidResult(["草图参数包含非有限数值"]);
+  if (!m) {
+    return finish({ ok: true, iterations: 0, cost: 0, ms: 0, maxErr: 0, dof: n, dofApproximate: false,
+      conflicted: false, conflicts: [] });
+  }
 
-  const residuals = () => constraints.map((c) => c.error());
+  const residuals = () => residualVector(constraints, rowStart, rows);
   const costOf = (r) => r.reduce((s, x) => s + x * x, 0);
   const maxAbs = (r) => r.reduce((s, x) => Math.max(s, Math.abs(x)), 0);
 
   let r;
   try { r = residuals(); }
   catch (error) { return invalidResult([`约束计算失败：${error.message || error}`]); }
-  if (r.some(value => !Number.isFinite(value))) return invalidResult(["约束计算产生了非有限残差"]);
+  if (r.some((value) => !Number.isFinite(value))) return invalidResult(["约束计算产生了非有限残差"]);
   let cost = costOf(r);
   if (!n) {
-    const maxErr = maxAbs(r), ok = maxErr <= (opts.okTol ?? 1e-6);
-    return { ok, iterations: 0, cost, ms: 0, maxErr, dof: 0, dofApproximate: true, conflicted: !ok,
-      conflicts: constraints.filter((_, i) => Math.abs(r[i]) > (opts.okTol ?? 1e-6)).map(c => c.label) };
+    const maxErr = maxAbs(r), ok = maxErr <= okTol;
+    return finish({ ok, iterations: 0, cost, ms: 0, maxErr, dof: 0, dofApproximate: false, conflicted: !ok,
+      conflicts: conflictLabels(constraints, rowStart, r, okTol) });
   }
+
+  const core = { params, constraints, n, m: rows, residuals, costOf, maxAbs, rowStart };
+  const jacobian = () => buildJacobian(params, constraints, n, rowStart, rows, deps);
+  const runOpts = { maxIter, tolErr, okTol, delta0: opts.delta0, leastNorm: opts.leastNorm };
+  let out;
+  if (opts.algorithm === "lm") out = solveLM({ ...core, jacobian }, runOpts, r, cost);
+  else {
+    // 默认：DogLeg；没解到位时回落 LM 再解一次（只发生在矛盾/病态草图上）
+    out = solveDogLeg({ ...core, jacobian }, runOpts, r, cost);
+    if (!out.ok && opts.algorithm !== "dogleg") {
+      const fallback = solveLM({ ...core, jacobian }, runOpts, r, cost);
+      if (fallback.maxErr < out.maxErr) out = fallback;
+    }
+  }
+  out.ms = nowMs() - t0;
+  out.conflicts = conflictLabels(constraints, rowStart, out.residuals ?? r, 1e-5);
+  return finish(out);
+}
+
+/** Levenberg-Marquardt（v5 的算法；残差改成分量形式，目标函数不变） */
+function solveLM(core, opts, r0, cost0) {
+  const { params, constraints, n, m, residuals, jacobian, costOf, maxAbs } = core;
+  const maxIter = opts.maxIter ?? 200, tolErr = opts.tolErr ?? 1e-9, okTol = opts.okTol ?? 1e-6;
+  let r = r0, cost = cost0;
   let lambda = 1e-3;
   let iter = 0;
-
-  /**
-   * 数值 Jacobian（中心差分）。
-   * 步长必须取 ~1e-6：太小（1e-7 及以下）会让分子 (rp-rm) 落进浮点抵消区，
-   * Jacobian 只剩 1e-9 左右的精度，残差就再也降不下去了 —— 实测卡在 3e-6。
-   * 中心差分的最优步长量级是 eps^(1/3) ≈ 6e-6。
+  /*
+   * 少自由度系统（m < n，CAD 草图绝大多数是这个情况）可以用**最小范数步**：
+   *   dx = Jᵀ (J Jᵀ + λI)⁻¹ (−r)
+   * 它等价于“在满足线性化约束的前提下，让参数改变量最小”，而且线性方程组的阶数从 n 降到 m。
    */
-  const jacobian = () => {
-    const J = [];
-    for (let i = 0; i < m; i++) J.push(new Array(n).fill(0));
-    for (let j = 0; j < n; j++) {
-      const p = params[j];
-      const old = p.value;
-      const h = Math.max(1e-6, Math.abs(old) * 1e-6);
-      p.value = old + h;
-      const rp = residuals();
-      p.value = old - h;
-      const rm = residuals();
-      p.value = old;
-      for (let i = 0; i < m; i++) J[i][j] = (rp[i] - rm[i]) / (2 * h);
-    }
-    return J;
-  };
+  const leastNorm = !!opts.leastNorm && m < n;
 
   while (iter < maxIter && maxAbs(r) > tolErr) {
     iter++;
     const J = jacobian();
 
-    // 梯度 g = Jᵀ r，Hessian 近似 H = JᵀJ
     const g = new Array(n).fill(0);
-    const H = [];
-    for (let a = 0; a < n; a++) H.push(new Array(n).fill(0));
+    const H = leastNorm ? null : [];
+    if (!leastNorm) for (let a = 0; a < n; a++) H.push(new Array(n).fill(0));
     for (let i = 0; i < m; i++) {
       const Ji = J[i];
       for (let a = 0; a < n; a++) {
         g[a] += Ji[a] * r[i];
-        if (Ji[a] === 0) continue;
+        if (leastNorm || Ji[a] === 0) continue;
         for (let b = a; b < n; b++) H[a][b] += Ji[a] * Ji[b];
       }
     }
-    for (let a = 0; a < n; a++) for (let b = 0; b < a; b++) H[a][b] = H[b][a];
+    if (!leastNorm) for (let a = 0; a < n; a++) for (let b = 0; b < a; b++) H[a][b] = H[b][a];
+
+    let S = null;
+    if (leastNorm) {
+      S = [];
+      for (let i = 0; i < m; i++) S.push(new Array(m).fill(0));
+      for (let i = 0; i < m; i++) {
+        const Ji = J[i];
+        for (let k = i; k < m; k++) {
+          const Jk = J[k];
+          let s = 0;
+          for (let a = 0; a < n; a++) s += Ji[a] * Jk[a];
+          S[i][k] = s;
+          S[k][i] = s;
+        }
+      }
+    }
 
     let step = null;
     for (let tryIdx = 0; tryIdx < 14; tryIdx++) {
-      const A = H.map((row, i) => row.map((v, j) => (i === j ? v + lambda * (1 + v) : v)));
-      const dx = solveLinear(A, g.map((v) => -v));
+      let dx;
+      if (leastNorm) {
+        const A = S.map((row, i) => row.map((v, j) => (i === j ? v + lambda * (1 + v) : v)));
+        const y = solveLinear(A, r.map((v) => -v));
+        if (!y) { lambda *= 4; continue; }
+        dx = new Array(n).fill(0);
+        for (let a = 0; a < n; a++) {
+          let s = 0;
+          for (let i = 0; i < m; i++) s += J[i][a] * y[i];
+          dx[a] = s;
+        }
+      } else {
+        const A = H.map((row, i) => row.map((v, j) => (i === j ? v + lambda * (1 + v) : v)));
+        dx = solveLinear(A, g.map((v) => -v));
+      }
       if (!dx) { lambda *= 4; continue; }
 
       // 限制单步长度：线性化只在邻域内有效，跨太大反而震荡
@@ -856,20 +1386,193 @@ export function solve(params, constraints, opts = {}) {
   }
 
   const maxErr = maxAbs(r);
-  const ms = (typeof performance !== "undefined" ? performance.now() : Date.now()) - t0;
-  const okFlag = maxErr <= (opts.okTol ?? 1e-6);
-
+  const okFlag = maxErr <= okTol;
   return {
     ok: okFlag,
     iterations: iter,
     cost,
     maxErr,
-    ms,
+    ms: 0,
     dof: Math.max(0, n - m),
     dofApproximate: true,
     // 残差降不到 0 只有两种可能：约束互相矛盾，或方程冗余（过约束）。
     // 两者对用户都表现为"这些约束打架了"，所以列出来让他去删
     conflicted: !okFlag,
-    conflicts: constraints.filter((c) => Math.abs(c.error()) > 1e-5).map((c) => c.label),
+    conflicts: [],
+    residuals: r,
+  };
+}
+
+/**
+ * DogLeg（信赖域）—— 参考 planegcs solve_DL（GCS.cpp:2285-2450）与 Moré-Sorensen 折线法。
+ *
+ * 与 LM 的区别：LM 每一步都要「λ 试错扫描」（我们这边最多 14 次试步，每次都重算全部残差），
+ * DogLeg 用信赖域半径 δ 直接决定步长，一次成型；下降比 rho 只用来调 δ。
+ * 基准数据见 智能草图/solver-bench.json（当前结论：在分量残差下 LM 与 DogLeg 互有胜负，
+ * 所以默认仍是 LM；DogLeg 保留为 opts.algorithm="dogleg" 的可选项）。
+ */
+function solveDogLeg(core, opts, r0, cost0) {
+  const { params, constraints, n, m, residuals, jacobian, costOf, maxAbs } = core;
+  const maxIter = opts.maxIter ?? 200, tolErr = opts.tolErr ?? 1e-9, okTol = opts.okTol ?? 1e-6;
+  const leastNorm = !!opts.leastNorm && m < n;
+  let r = r0, cost = cost0;
+  // 信赖域半径的初值要跟坐标量级挂钩：草图上坐标常常是几十上百，
+  // 固定 1 会让前十几步都在原地挪（实测比 LM 还慢）。
+  let xnorm = 0;
+  for (const p of params) xnorm += p.value * p.value;
+  let delta = opts.delta0 ?? Math.max(1e-3, 0.1 * Math.sqrt(xnorm) / Math.max(1, Math.sqrt(n)));
+  let iter = 0;
+  const H = new Array(n);
+  const scaleTo = (v, len) => {
+    let norm = 0;
+    for (const x of v) norm += x * x;
+    norm = Math.sqrt(norm);
+    if (!(norm > 1e-300)) return null;
+    const f = len / norm;
+    return v.map((x) => x * f);
+  };
+
+  while (iter < maxIter && maxAbs(r) > tolErr) {
+    iter++;
+    const J = jacobian();
+
+    const g = new Array(n).fill(0);
+    if (!leastNorm) for (let a = 0; a < n; a++) H[a] = new Array(n).fill(0);
+    for (let i = 0; i < m; i++) {
+      const Ji = J[i];
+      for (let a = 0; a < n; a++) {
+        if (Ji[a] === 0) continue;
+        g[a] += Ji[a] * r[i];
+        if (leastNorm) continue;
+        for (let b = a; b < n; b++) H[a][b] += Ji[a] * Ji[b];
+      }
+    }
+    if (!leastNorm) for (let a = 0; a < n; a++) for (let b = 0; b < a; b++) H[a][b] = H[b][a];
+
+    let gn = 0;
+    for (const v of g) gn += v * v;
+    gn = Math.sqrt(gn);
+    if (!(gn > 1e-14)) break;                       // 梯度为零：已经是极值点
+
+    /*
+     * Gauss-Newton 步。
+     * 欠约束（m < n）时 JᵀJ 一定奇异，直接解不可靠；两种应对：
+     *   leastNorm  → 用最小范数形式 h = Jᵀ(JJᵀ + εI)⁻¹(−r)，阶数 m（比 n 小），且天然“改动最小”
+     *   否则       → 正常方程 + 一点岭
+     */
+    let hGN = null;
+    if (leastNorm) {
+      const S = [];
+      for (let i = 0; i < m; i++) S.push(new Array(m).fill(0));
+      for (let i = 0; i < m; i++) {
+        const Ji = J[i];
+        for (let k = i; k < m; k++) {
+          const Jk = J[k];
+          let s = 0;
+          for (let a = 0; a < n; a++) s += Ji[a] * Jk[a];
+          S[i][k] = s;
+          S[k][i] = s;
+        }
+      }
+      let tr = 0;
+      for (let i = 0; i < m; i++) tr += S[i][i];
+      const ridge = Math.max(1e-12, (tr / Math.max(1, m)) * 1e-10);
+      const y = solveLinear(S.map((row, i) => row.map((v, k) => (i === k ? v + ridge : v))), r.map((v) => -v));
+      if (y) {
+        hGN = new Array(n).fill(0);
+        for (let a = 0; a < n; a++) {
+          let s = 0;
+          for (let i = 0; i < m; i++) s += J[i][a] * y[i];
+          hGN[a] = s;
+        }
+      }
+    } else {
+      hGN = solveLinear(H.map((row) => row.slice()), g.map((v) => -v));
+      if (!hGN) {
+        let tr = 0;
+        for (let a = 0; a < n; a++) tr += H[a][a];
+        const ridge = Math.max(1e-12, (tr / Math.max(1, n)) * 1e-10);
+        hGN = solveLinear(H.map((row, a) => row.map((v, b) => (a === b ? v + ridge : v))), g.map((v) => -v));
+      }
+    }
+
+    // 最速下降步：沿 −g，步长取最优 α = ‖g‖²/‖Jg‖²
+    let alpha = 0;
+    {
+      let Jg2 = 0;
+      for (let i = 0; i < m; i++) {
+        let s = 0;
+        const Ji = J[i];
+        for (let a = 0; a < n; a++) s += Ji[a] * g[a];
+        Jg2 += s * s;
+      }
+      alpha = Jg2 > 0 ? (gn * gn) / Jg2 : 0;
+    }
+    const hSD = g.map((v) => -alpha * v);
+    let sdNorm = 0;
+    for (const v of hSD) sdNorm += v * v;
+    sdNorm = Math.sqrt(sdNorm);
+
+    let h = null;
+    if (!hGN) h = sdNorm > 1e-14 ? scaleTo(hSD, Math.min(sdNorm, delta)) : null;
+    else {
+      let gnNorm = 0;
+      for (const v of hGN) gnNorm += v * v;
+      gnNorm = Math.sqrt(gnNorm);
+      if (gnNorm <= delta) h = hGN;
+      else if (sdNorm >= delta) h = scaleTo(hSD, delta);
+      else {
+        const d = hGN.map((v, i) => v - hSD[i]);
+        let dd = 0, dsd = 0;
+        for (let i = 0; i < n; i++) { dd += d[i] * d[i]; dsd += d[i] * hSD[i]; }
+        const c = delta * delta - sdNorm * sdNorm;
+        const disc = dsd * dsd + dd * c;
+        let beta = 0;
+        if (dd > 1e-300 && disc >= 0) beta = (-dsd + Math.sqrt(disc)) / dd;
+        beta = Math.max(0, Math.min(1, beta));
+        h = hSD.map((v, i) => v + beta * d[i]);
+      }
+    }
+    if (!h) break;
+
+    const backup = params.map((p) => p.value);
+    params.forEach((p, i) => { p.value = backup[i] + h[i]; });
+    const rNew = residuals();
+    const cNew = costOf(rNew);
+
+    let predicted = 0;
+    for (let i = 0; i < m; i++) {
+      let Jh = 0;
+      const Ji = J[i];
+      for (let a = 0; a < n; a++) Jh += Ji[a] * h[a];
+      predicted += r[i] * Jh + 0.5 * Jh * Jh;
+    }
+    const rho = predicted > 0 ? (cost - cNew) / predicted : (cNew < cost ? 1 : 0);
+
+    if (isFinite(cNew) && cNew < cost) {
+      r = rNew;
+      cost = cNew;
+      if (rho > 0.75) delta *= 2;
+      else if (rho < 0.25) delta = Math.max(delta / 3, 1e-12);
+    } else {
+      params.forEach((p, i) => { p.value = backup[i]; });
+      delta /= 3;
+      if (delta < 1e-12) break;
+    }
+  }
+
+  const maxErr = maxAbs(r);
+  const okFlag = maxErr <= okTol;
+  return {
+    ok: okFlag,
+    iterations: iter,
+    cost,
+    maxErr,
+    ms: 0,
+    dof: Math.max(0, n - m),
+    dofApproximate: true,
+    conflicted: !okFlag,
+    conflicts: [],
+    residuals: r,
   };
 }

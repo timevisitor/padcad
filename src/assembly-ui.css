@@ -1,0 +1,487 @@
+/**
+ * 装配模式 UI 样式（Clay 主题 · 平板触摸）
+ *
+ * 三条约定：
+ *  1. 只挂在 `body.asm-mode` 下 —— 退出装配模式后本文件对既有界面零影响；
+ *  2. 命中区一律 ≥44px（平板手指），文字只用 12~14px，按钮靠面积不是靠字号；
+ *  3. 颜色全用 Clay 令牌（与 theme.css 同一套值），不写死深浅两套。
+ */
+
+#asmRoot {
+  --asm-panel: #f4eee3;
+  --asm-appbar: #e6dfd3;
+  --asm-card: #fdfaf3;
+  --asm-border: #d6cbb7;
+  --asm-border-soft: #e3dbca;
+  --asm-fg: #2a251f;
+  --asm-muted: #675e50;
+  --asm-accent: #bf5634;
+  --asm-accent-soft: #f0d8ca;
+  --asm-ok: #257231;
+  --asm-warn: #956000;
+  --asm-bad: #c71529;
+  --asm-r: 13px;
+  --asm-shadow: 0 8px 28px rgba(20, 17, 13, .16), 0 2px 6px rgba(20, 17, 13, .08);
+  font: 13px/1.35 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: var(--asm-fg);
+}
+
+#asmRoot.hidden { display: none !important; }
+
+/* ---- 装配模式下把零件模式的界面收起来 ---- */
+body.asm-mode #workspaceHeader,
+body.asm-mode #toolDock,
+body.asm-mode #dockHandle,
+body.asm-mode #status,
+body.asm-mode #tree,
+body.asm-mode #featTree,
+body.asm-mode #shellTopRight,
+body.asm-mode #picker,
+body.asm-mode #dimHandle,
+body.asm-mode #dimValue,
+body.asm-mode #navigationBar [data-act="snap"],
+body.asm-mode #navigationBar [data-act="datum"] {
+  display: none !important;
+}
+
+/* ---- 顶条 ---- */
+#asmBar {
+  position: fixed;
+  top: 10px; left: 50%;
+  transform: translateX(-50%);
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px 6px 16px;
+  background: var(--asm-appbar);
+  border: 1px solid var(--asm-border);
+  border-radius: 999px;
+  box-shadow: var(--asm-shadow);
+  z-index: 60;
+  white-space: nowrap;
+}
+#asmBar .asm-doc {
+  font-weight: 700; letter-spacing: .2px; color: var(--asm-fg);
+  max-width: 42vw; overflow: hidden; text-overflow: ellipsis;
+}
+#asmBar .asm-doc::before {
+  content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--asm-accent); margin-right: 8px; vertical-align: 1px;
+}
+
+/* ---- 通用按钮 ---- */
+#asmRoot button { font: inherit; color: var(--asm-fg); cursor: pointer; }
+#asmRoot .asm-btn {
+  min-width: 56px; min-height: 48px;
+  display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  background: var(--asm-card);
+  border: 1px solid var(--asm-border);
+  border-radius: 11px;
+  padding: 4px 6px;
+  transition: background .12s ease, border-color .12s ease, transform .08s ease;
+}
+#asmRoot .asm-btn i { font-style: normal; font-size: 17px; line-height: 1; }
+#asmRoot .asm-btn span { font-size: 11px; letter-spacing: .2px; color: var(--asm-muted); }
+#asmRoot .asm-btn:hover { background: #fff; }
+#asmRoot .asm-btn:active { transform: scale(.97); }
+#asmRoot .asm-btn.on {
+  background: var(--asm-accent-soft);
+  border-color: var(--asm-accent);
+}
+#asmRoot .asm-btn.on span { color: var(--asm-accent); font-weight: 600; }
+#asmRoot .asm-btn.primary {
+  background: var(--asm-accent); border-color: var(--asm-accent); color: #fff;
+  flex-direction: row; gap: 6px; min-width: 88px;
+}
+#asmRoot .asm-btn.primary span { color: #fff; }
+#asmRoot .asm-btn.sm {
+  flex-direction: row; min-width: 76px; min-height: 44px; font-size: 13px;
+  background: var(--asm-card);
+}
+
+/* ---- 左侧工具轨 ---- */
+#asmRail {
+  position: fixed;
+  left: 10px; top: 70px;
+  width: 62px;
+  padding: 6px;
+  display: flex; flex-direction: column; gap: 6px;
+  background: var(--asm-panel);
+  border: 1px solid var(--asm-border);
+  border-radius: var(--asm-r);
+  box-shadow: var(--asm-shadow);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  z-index: 55;
+  scrollbar-width: none;
+}
+#asmRail::-webkit-scrollbar { width: 0; }
+#asmRail .asm-btn { width: 100%; min-width: 0; }
+
+/* ---- 右侧面板 ---- */
+#asmPanel {
+  position: fixed;
+  right: 10px; top: 70px; bottom: 96px;
+  width: 340px;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 8px;
+  background: var(--asm-panel);
+  border: 1px solid var(--asm-border);
+  border-radius: var(--asm-r);
+  box-shadow: var(--asm-shadow);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  z-index: 55;
+}
+#asmPanel .asm-sec {
+  background: var(--asm-card);
+  border: 1px solid var(--asm-border-soft);
+  border-radius: 11px;
+  padding: 6px 6px 8px;
+}
+#asmPanel .asm-sec-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 4px 6px 6px;
+  border-bottom: 1px solid var(--asm-border-soft);
+  margin-bottom: 4px;
+}
+#asmPanel .asm-sec-head b { font-size: 12.5px; letter-spacing: .3px; }
+#asmPanel .asm-count { font-size: 11.5px; color: var(--asm-muted); }
+
+/* DOF 徽标 */
+#asmRoot .asm-dof {
+  font-size: 12px; font-weight: 700;
+  padding: 4px 9px; border-radius: 999px;
+  background: #eceae3; color: var(--asm-muted);
+  border: 1px solid var(--asm-border-soft);
+}
+#asmRoot .asm-dof[data-tone="ok"] { background: #dff0e0; color: var(--asm-ok); border-color: #b9dcbd; }
+#asmRoot .asm-dof[data-tone="warn"] { background: #f6ecd4; color: var(--asm-warn); border-color: #e6d5ac; }
+#asmRoot .asm-dof[data-tone="bad"] { background: #f7dadd; color: var(--asm-bad); border-color: #e8b6bb; }
+
+/* ---- 列表行 ---- */
+#asmRoot .asm-list { display: flex; flex-direction: column; gap: 4px; }
+#asmRoot .asm-row {
+  display: flex; align-items: center; gap: 6px;
+  min-height: 56px;
+  padding: 5px 4px 5px 6px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  background: #fbf7ef;
+  cursor: pointer;
+}
+#asmRoot .asm-row.compact { min-height: 48px; }
+#asmRoot .asm-row:hover { background: #fff; }
+#asmRoot .asm-row.sel { border-color: var(--asm-accent); background: var(--asm-accent-soft); }
+#asmRoot .asm-row.off { opacity: .55; }
+#asmRoot .asm-row-main { flex: 1 1 auto; min-width: 0; }
+#asmRoot .asm-row-main b {
+  display: block; font-size: 13px; font-weight: 650;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#asmRoot .asm-row-main small {
+  display: block; font-size: 11px; color: var(--asm-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#asmRoot .asm-swatch {
+  flex: 0 0 auto; width: 12px; height: 12px; border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, .18);
+}
+#asmRoot .asm-swatch.asm-ico {
+  width: 26px; height: 26px; border-radius: 7px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: #efe7d8; color: var(--asm-fg); font-size: 14px; font-style: normal;
+}
+#asmRoot .asm-swatch.asm-badbg { background: var(--asm-bad); }
+#asmRoot .asm-mini {
+  flex: 0 0 auto;
+  min-width: 44px; min-height: 44px;
+  padding: 0 6px;
+  font-size: 11.5px;
+  background: var(--asm-card);
+  border: 1px solid var(--asm-border);
+  border-radius: 9px;
+}
+#asmRoot .asm-mini:hover { background: #fff; }
+#asmRoot .asm-mini.on { background: var(--asm-accent-soft); border-color: var(--asm-accent); color: var(--asm-accent); }
+/* 固定/浮动是**状态**，不是警示：用中性色块，别和 --asm-bad 那套红撞在一起（视觉复核第 7 条） */
+#asmRoot .asm-mini.as-fix.on {
+  background: #e7e2d6; border-color: #b9b0a0; color: var(--asm-fg); font-weight: 600;
+}
+/* 显隐：眼睛图标（SVG）跟着 currentColor 走；隐藏态去色 */
+#asmRoot .asm-mini.as-vis { display: inline-flex; align-items: center; justify-content: center; padding: 0; }
+#asmRoot .asm-mini.as-vis .asm-eye { display: block; }
+#asmRoot .asm-mini.as-vis:not(.on) { color: var(--asm-muted); }
+/* 删除二次确认：确认态就地变红，文字改成「确认」—— 提示这次点下去就真删 */
+#asmRoot .asm-mini.as-del.armed {
+  background: var(--asm-bad); border-color: #a51220; color: #fff; font-weight: 700;
+}
+#asmRoot .asm-fixed { font-style: normal; color: var(--asm-accent); font-weight: 700; }
+#asmRoot .asm-val { font-style: normal; color: #006a70; font-weight: 650; }
+#asmRoot .asm-res { font-style: normal; font-weight: 500; font-size: 10.5px; letter-spacing: -.2px; }
+#asmRoot .asm-dim { font-style: normal; color: var(--asm-muted); font-weight: 400; }
+#asmRoot .asm-bad { color: var(--asm-bad); font-weight: 700; }
+#asmRoot .asm-ok { color: var(--asm-ok); }
+#asmRoot .asm-warn { color: var(--asm-warn); }
+#asmRoot .asm-empty {
+  padding: 10px 8px; font-size: 11.5px; color: var(--asm-muted); line-height: 1.6;
+}
+#asmRoot .asm-empty.ok { color: var(--asm-ok); }
+
+/* ---- 爆炸滑杆 ---- */
+#asmRoot .asm-explode {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px 8px;
+  font-size: 11.5px; color: var(--asm-muted);
+}
+#asmRoot .asm-explode > span { flex: 0 0 auto; }
+#asmRoot .asm-explode em { flex: 0 0 40px; font-style: normal; text-align: right; color: var(--asm-fg); }
+#asmRoot .asm-slider {
+  /*
+   * 左右各留 14px：滑柄是 28px 的圆、按中心定位，0% 时会向轨道左边溢出 14px。
+   * 不留这 14px，滑柄在 0% 就压住左边的「爆炸」两个字（实测截图上只剩一个「爆」）。
+   */
+  margin: 0 14px;
+  position: relative; flex: 1 1 auto;
+  height: 44px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #e6dfd2, #efe7d8);
+  border: 1px solid var(--asm-border-soft);
+  touch-action: none;
+}
+#asmRoot .asm-slider i {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  width: 0%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #d8c2a8, var(--asm-accent-soft));
+}
+#asmRoot .asm-slider b {
+  position: absolute; top: 50%; left: 0;
+  width: 28px; height: 28px; margin: -14px 0 0 -14px;
+  border-radius: 50%;
+  background: var(--asm-card);
+  border: 2px solid var(--asm-accent);
+  box-shadow: 0 1px 4px rgba(20, 17, 13, .25);
+  pointer-events: none;
+}
+
+/* ---- 底部提示 ---- */
+#asmHud {
+  position: fixed;
+  left: 84px; bottom: 12px;
+  max-width: calc(100vw - 84px - 364px);
+  display: flex; align-items: center;
+  min-height: 44px;
+  padding: 8px 14px;
+  background: var(--asm-panel);
+  border: 1px solid var(--asm-border);
+  border-radius: 999px;
+  box-shadow: var(--asm-shadow);
+  font-size: 12px; color: var(--asm-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  z-index: 54;
+}
+#asmHud span.flash { color: var(--asm-accent); font-weight: 600; }
+
+/* ---- 配合类型浮块 ---- */
+#asmMenu {
+  position: fixed;
+  width: 268px;
+  padding: 8px;
+  background: var(--asm-panel);
+  border: 1px solid var(--asm-border);
+  border-radius: var(--asm-r);
+  box-shadow: var(--asm-shadow);
+  z-index: 70;
+}
+#asmMenu.hidden, #asmKey.hidden, #asmSheet.hidden { display: none !important; }
+#asmMenu .asm-menu-head {
+  font-size: 11.5px; color: var(--asm-muted);
+  padding: 2px 4px 7px;
+  border-bottom: 1px solid var(--asm-border-soft);
+  margin-bottom: 7px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#asmMenu .asm-menu-head b { color: var(--asm-accent); }
+#asmMenu .asm-menu-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+}
+/* 面-面这种 6~7 项的菜单排 4 列（7 项 = 2 行）：浮层越矮越容易塞进"被选面以外"的空隙。
+   实测 2 列 348px 高时，为了躲开两个面的投影只能退到 316px 外；2 行 ~200px 高就能贴着落点放。 */
+#asmMenu .asm-menu-grid.cols-3 { grid-template-columns: repeat(4, 1fr); }
+#asmMenu .asm-mate-btn {
+  display: flex; align-items: center; gap: 6px;
+  min-height: 52px;
+  padding: 0 8px;
+  background: var(--asm-card);
+  border: 1px solid var(--asm-border);
+  border-radius: 10px;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+/* 紧凑档（4 列的宽菜单）：命中区收到 48px，仍高于平板 44px 下限 */
+#asmMenu .asm-menu-grid.cols-3 .asm-mate-btn { min-height: 48px; padding: 0 7px; }
+#asmMenu .asm-mate-btn i {
+  font-style: normal; font-size: 16px; width: 18px; text-align: center; color: var(--asm-accent);
+}
+#asmMenu .asm-mate-btn:hover { background: #fff; border-color: var(--asm-accent); }
+#asmMenu .asm-mate-btn.on { background: #efe7d8; }
+#asmMenu .asm-menu-foot {
+  margin-top: 7px; font-size: 10.5px; color: var(--asm-muted); text-align: center;
+}
+/* 取消：这次配合的退出路径（浮层里必须有出口，不能只能靠"点外面关掉"） */
+#asmMenu .asm-menu-cancel {
+  margin-top: 6px; width: 100%; min-height: 44px;
+  background: transparent; border: 1px solid var(--asm-border);
+  border-radius: 10px; font-size: 12.5px; color: var(--asm-muted);
+}
+#asmMenu .asm-menu-cancel:active { background: #efe7d8; color: var(--asm-fg); }
+
+/* ---- 数字键盘 ---- */
+#asmKey {
+  position: fixed;
+  width: 300px;
+  padding: 10px;
+  background: var(--asm-panel);
+  border: 1px solid var(--asm-border);
+  border-radius: var(--asm-r);
+  box-shadow: var(--asm-shadow);
+  z-index: 72;
+}
+#asmKey .asm-key-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--asm-muted);
+  padding-bottom: 6px;
+}
+#asmKey .asm-key-head b { font-size: 13px; color: var(--asm-fg); }
+#asmKey .asm-key-head .asm-mini { margin-left: auto; min-width: 44px; }
+#asmKey .asm-key-val {
+  display: flex; align-items: baseline; justify-content: flex-end; gap: 4px;
+  font-size: 26px; font-weight: 700;
+  padding: 6px 10px 10px;
+  color: #006a70;
+  font-variant-numeric: tabular-nums;
+}
+#asmKey .asm-key-val em { font-style: normal; font-size: 13px; color: var(--asm-muted); }
+#asmKey .asm-key-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+#asmKey .asm-key-grid button {
+  min-height: 50px; font-size: 18px;
+  background: var(--asm-card);
+  border: 1px solid var(--asm-border);
+  border-radius: 10px;
+}
+#asmKey .asm-key-grid button:active { background: var(--asm-accent-soft); }
+#asmKey .asm-key-foot {
+  display: flex; gap: 6px; margin-top: 8px;
+}
+#asmKey .asm-key-foot .asm-flip {
+  flex: 1 1 auto; min-height: 48px;
+  background: var(--asm-card); border: 1px solid var(--asm-border);
+  border-radius: 10px; font-size: 13px;
+}
+#asmKey .asm-key-foot .asm-flip.on { background: var(--asm-accent-soft); border-color: var(--asm-accent); color: var(--asm-accent); }
+#asmKey .asm-key-foot .asm-btn.primary { flex: 1 1 auto; min-height: 48px; }
+
+/* ---- 弹层（插入 / 保存 / 打开 / BOM） ---- */
+#asmSheet {
+  position: fixed; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(28, 24, 18, .28);
+  z-index: 80;
+}
+#asmSheet .asm-sheet-card {
+  width: min(560px, 92vw);
+  max-height: min(78vh, 640px);
+  display: flex; flex-direction: column;
+  background: var(--asm-panel);
+  border: 1px solid var(--asm-border);
+  border-radius: 18px;
+  box-shadow: 0 24px 60px rgba(20, 17, 13, .3);
+  overflow: hidden;
+}
+#asmSheet .asm-sheet-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 12px 10px 16px;
+  background: var(--asm-appbar);
+  border-bottom: 1px solid var(--asm-border);
+}
+#asmSheet .asm-sheet-head b { font-size: 14px; }
+#asmSheet .asm-sheet-body { padding: 10px 14px 14px; overflow-y: auto; }
+#asmSheet .asm-sheet-sec { margin-top: 10px; }
+#asmSheet .asm-sheet-sec h4 {
+  margin: 0 0 6px; font-size: 11.5px; font-weight: 650;
+  color: var(--asm-muted); letter-spacing: .4px;
+}
+#asmSheet .asm-chipgrid { display: flex; flex-wrap: wrap; gap: 6px; }
+#asmSheet .asm-chip {
+  min-height: 46px; padding: 0 14px;
+  background: var(--asm-card);
+  border: 1px solid var(--asm-border);
+  border-radius: 10px;
+  font-size: 12.5px;
+}
+#asmSheet .asm-chip:hover { border-color: var(--asm-accent); }
+#asmSheet .asm-chip:disabled { opacity: .5; }
+#asmSheet .asm-dim { font-size: 11.5px; color: var(--asm-muted); margin: 6px 0 0; line-height: 1.5; }
+#asmSheet .asm-field { display: flex; align-items: center; gap: 8px; }
+#asmSheet .asm-field span { font-size: 12px; color: var(--asm-muted); }
+#asmSheet .asm-input {
+  flex: 1 1 auto; min-height: 46px; padding: 0 12px;
+  font: inherit; font-size: 14px;
+  background: var(--asm-card);
+  border: 1px solid var(--asm-border);
+  border-radius: 10px;
+  color: var(--asm-fg);
+}
+#asmSheet .asm-sheet-actions { display: flex; gap: 8px; margin-top: 10px; }
+#asmSheet .asm-list { display: flex; flex-direction: column; gap: 4px; }
+#asmSheet .asm-row {
+  display: flex; align-items: center; gap: 8px;
+  min-height: 52px; padding: 6px 8px;
+  background: var(--asm-card);
+  border: 1px solid var(--asm-border-soft);
+  border-radius: 10px; cursor: pointer;
+}
+#asmSheet .asm-row:hover { border-color: var(--asm-accent); }
+#asmSheet .asm-row-main { flex: 1 1 auto; min-width: 0; }
+#asmSheet .asm-row-main b { display: block; font-size: 13px; }
+#asmSheet .asm-row-main small { display: block; font-size: 11px; color: var(--asm-muted); }
+#asmSheet .asm-mini, #asmSheet .asm-btn {
+  font: inherit; color: var(--asm-fg);
+  min-width: 44px; min-height: 44px;
+  background: var(--asm-card); border: 1px solid var(--asm-border); border-radius: 9px;
+  padding: 0 8px;
+}
+#asmSheet .asm-btn.primary { background: var(--asm-accent); border-color: var(--asm-accent); color: #fff; min-width: 96px; }
+
+/* BOM 表 */
+#asmRoot .asm-bom { margin-top: 6px; }
+#asmSheet .asm-table {
+  width: 100%; border-collapse: collapse; font-size: 12px;
+  background: var(--asm-card);
+  border-radius: 10px; overflow: hidden;
+}
+#asmSheet .asm-table th, #asmSheet .asm-table td {
+  padding: 9px 8px; text-align: left;
+  border-bottom: 1px solid var(--asm-border-soft);
+}
+#asmSheet .asm-table th { background: #efe7d8; font-size: 11.5px; color: var(--asm-muted); }
+#asmSheet .asm-table tfoot td { font-weight: 700; border-bottom: 0; }
+
+/* 上一层的 ⋯ 菜单里那条「转到装配」 */
+#mainMenu .sm-item[data-sm="assembly"] { display: flex; }
+#mainMenu .sm-item[data-sm="assembly"]::before {
+  content: "⌗"; display: inline-block; width: 18px; color: #bf5634; font-size: 15px;
+}
+
+/* 退路：找不到 ⋯ 菜单时挂在左上 chip 旁边的按钮 */
+.asm-inline-btn {
+  min-height: 44px; padding: 0 12px;
+  font: inherit; font-size: 12.5px;
+  background: #fdfaf3; color: #2a251f;
+  border: 1px solid #d0c5b0; border-radius: 9px;
+}
+
+/* 窄屏（竖屏平板）时面板让出宽度 */
+@media (max-width: 900px) {
+  #asmPanel { width: 286px; }
+  #asmHud { max-width: calc(100vw - 84px - 310px); }
+}

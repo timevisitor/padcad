@@ -10,6 +10,7 @@
 | [replicad-opencascadejs](https://github.com/sgenoud/replicad) | 1.1.0 | **LGPL-2.1-only** | OCCT 的 wasm 构建；`replicad_single.wasm`(22MB) 由它提供 |
 | [OpenCASCADE Technology](https://dev.opencascade.org/) | 随上游 | **LGPL-2.1 + 例外条款** | 几何内核本体 |
 | [three.js](https://threejs.org/) | r186 | MIT | WebGL 渲染 |
+| [three-mesh-bvh](https://github.com/gkjohnson/three-mesh-bvh) | 0.9.x | MIT | 三角网格 BVH：大模型拾取与渲染筛选加速 |
 | [@capacitor/core · android · filesystem](https://capacitorjs.com/) | 8.x | MIT | 打包成安卓应用、文件读写 |
 
 ## 开发依赖

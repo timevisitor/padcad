@@ -16,26 +16,30 @@ APK 打包走 Capacitor，在小米 Pad 7 Pro/Ultra 这类 12 寸平板上是真
 
 ## 下载 APK（安卓平板）
 
-**最新版：[PadCAD-5.1.7.apk](https://github.com/timevisitor/padcad/releases/latest/download/PadCAD-5.1.7.apk)**（约 10.9 MB）
+**最新版：[PadCAD-6.0.2.apk](https://github.com/timevisitor/padcad/releases/latest/download/PadCAD-6.0.2.apk)**（约 12.5 MB，versionCode 82）
 
 - 要求：Android 7.0+（`minSdk 24`），横屏使用；无反编译库，arm64/armv7/x86 通用
 - 安装：允许"安装未知来源应用"→ 直接装；首次进建模会加载 22MB 内核，约 1–3 秒
 - 签名：本仓库的发布包用 debug 证书签名（方便自用升级），**不适合上架应用商店**；要正式分发请自己生成 keystore 签
-- 校验：`sha256 = b7e4be978693843a8043419ba82764c2254cff3bee40f8055a8e3147d70834bf`
+- 校验：`sha256 = 5d21bb4cd6f5c82ed16732de9e8d95156d46fcc8391b2a04b27d45a07a07f706f58`
+- 升级：与 5.1.7 同包名 `com.padcad.tablet`、同 debug 证书签名，可直接覆盖安装，本地设计不丢
 
 > 国内直连 GitHub release 的下载可能很慢或中断，可以用镜像前缀：
-> `https://ghfast.top/` + 上面的下载地址（例：`https://ghfast.top/https://github.com/timevisitor/padcad/releases/latest/download/PadCAD-5.1.7.apk`）。
+> `https://ghfast.top/https://github.com/timevisitor/padcad/releases/latest/download/PadCAD-6.0.2.apk`）。
 > 镜像只是加速，装之前仍建议核一下 sha256。
+
+完整版本记录（versionCode、sha256、变更要点）见 [docs/releases.md](docs/releases.md)。
 
 ## 能做什么
 
 | 类别 | 能力 |
 |---|---|
-| 草图 | 矩形 / 圆 / 直线 / 自由折线 / 多边形 / 槽口 / 三点圆弧 / 椭圆 / 裁剪 / 等距 / 转换实体引用 / 镜像与阵列 |
+| 草图 | 矩形 / 圆 / 直线 / 自由折线 / 多边形 / 槽口 / 三点圆弧 / 椭圆 / 裁剪 / 等距 / 转换实体引用 / 镜像与阵列；v6 求解器（LM + 数值雅可比）带自由度诊断与过约束提示 |
 | 特征 | 拉伸（加料/挖料/多轮廓）、旋转、扫掠、放样、圆角、倒角、抽壳、孔向导（通孔/盲孔/沉头/埋头） |
 | 实体 | 布尔（并/差/交）、平面分割、移动面、加厚 |
 | 曲面 | 曲面偏移、缝合、补面、曲面加厚 |
-| 参数化 | 历史特征树、参数编辑与重放、智能尺寸（点两个面设距离，自动反解到上游特征）、撤销/重做 |
+| 参数化 | 历史特征树、参数编辑与重放（改参数是一个**可撤销动作**：撤销恢复旧参数与旧实体，重做恢复新值）、智能尺寸（点两个面设距离，自动反解到上游特征）、统一动作顺序的撤销/重做 |
+| 装配 | 多实体装配（插入示例件/本地件）、配合（同心/重合/距离/角度）、干涉检查、装配体保存与读取 |
 | 检查 | 质量属性（体积/面积/质心/包围盒）、两面距离、干涉检查、任意高度截面 |
 | 参考几何 | 世界基准面与偏移基准面、参考轴/点/坐标系 |
 | 输入输出 | 导出 STEP / STL / OBJ / 3MF；看图模式导入 STEP / STL / PLY / OBJ；工程保存与打开 |
@@ -61,7 +65,7 @@ git clone https://github.com/timevisitor/padcad.git
 cd padcad
 npm install          # postinstall 会把 22MB 的几何内核拷到 public/
 npm run dev          # http://localhost:5173
-npm test             # 226 项回归（真实 OCCT 计算，不依赖浏览器）
+npm test             # 454 项回归（真实 OCCT 计算，不依赖浏览器）
 npm run build        # 产出 dist/
 ```
 
@@ -89,7 +93,13 @@ src/ops.js            建模操作（推拉、圆角、抽壳、孔、面信息�
 src/replay.js         参数化重放：从起始零件重算历史链，每步可回填
 src/viewer.js         three.js 视口（Z-up，面高亮、拾取、预览线框）
 src/camera.js         触摸轨道相机（单指旋转/平面平移、双指缩放平移、长按菜单）
-src/sketch*.js        草图会话、图元、约束求解器、捕捉与追踪
+src/sketch*.js        草图会话、图元、约束求解器（v6：LM）、自由度诊断、拖动与捕捉
+src/assembly*.js      装配（件/配合/干涉检查）、装配体读写与装配浮层 UI
+src/param-edit.js     特征参数编辑的事务语义（预览不污染提交态、失败回退已提交画面）
+src/state.js          状态容器（doc/ui/view 分块 + 订阅），替代模块级散变量
+src/perf-pick.js      基于 three-mesh-bvh 的拾取加速
+src/ui-context.js     语境工具栏与选择态
+src/ui-gestures.js    单指/双指/三指手势识别（含笔/掌拒识）
 src/pen-cursor.js     触控笔悬停光标（笔尖离屏时的落点指示）
 src/float-layout.js   平板浮层布局的纯函数（径向菜单、面卡避让）
 src/step-io.js        STEP 读取与错误归类（导入链路的兜底）
@@ -99,7 +109,7 @@ src/inspect.js        质量属性、距离、干涉、截面
 src/exporters.js      STEP / STL / OBJ / 3MF 导出
 src/importers.js      STEP / STL / PLY / OBJ 导入（看图模式）
 src/main.js           UI 组装与交互状态机（最大的一块，正在解耦）
-regression-*.mjs      226 项无头回归（node:test，真实几何断言）
+regression-*.mjs      454 项无头回归（node:test，真实几何断言）
 ```
 
 设计上的两个硬约定：
@@ -134,7 +144,7 @@ regression-*.mjs      226 项无头回归（node:test，真实几何断言）
 - 面/边的引用还是"解析几何 + 历史参数匹配"，**没有拓扑命名**：复杂布尔之后面分裂/合并时可能认不出来源，
   此时会明确拒绝而不是猜。
 - 圆环面/圆锥面没有来源关系（不显示径向手柄），要改只能回历史里改原始特征。
-- 改参数没有独立的撤销栈（撤销只能回到历史步骤）。
+- 参数编辑已并入统一撤销栈，但**参数表、变量与单位表达式**（SolidCraft 那类）仍未做。
 - 未做：拔模、删除面/替换面、裁切实体、时间线重排/分组、配置与参数表、X_T 读取。
 - UI 层 `main.js` 仍然偏大（约 6700 行、大量模块级状态），解耦计划在推进中。
 

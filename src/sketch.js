@@ -785,6 +785,17 @@ export class SketchSession {
     return this._lines(list, this._draft ? cursor : null);
   }
 
+  /**
+   * **只要**正在画的那条草稿（含橡皮筋）。
+   *
+   * 用它把草稿单独送进 viewer 的「预览」槽（matSketchPreview，实线琥珀色）；
+   * 之前草稿混在 toLinesWithDraft 里跟已完成轮廓一个材质（绿色实线），
+   * 用户分不出"这条还没提交"—— 也正是预览线与推理虚线糊成一条的根因。
+   */
+  draftLines(cursor = null) {
+    return this._draft ? this._lines([this._draft], cursor) : null;
+  }
+
   /** 单个图形的线段（实时预览用） */
   lineOf(e) { return e ? this._lines([e]) : null; }
 }

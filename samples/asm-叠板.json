@@ -1,0 +1,254 @@
+{
+  "v": 1,
+  "kind": "asm",
+  "name": "叠板装配",
+  "unit": "mm",
+  "savedAt": "2026-11-10T04:46:36.017Z",
+  "parts": [
+    {
+      "id": "p1",
+      "name": "底板",
+      "source": {
+        "kind": "project",
+        "project": {
+          "v": 1,
+          "name": "底板",
+          "savedAt": "2026-11-10T04:46:35.919Z",
+          "featureCount": 2,
+          "hIndex": 1,
+          "refGeoms": [],
+          "rgSeq": {},
+          "features": [
+            {
+              "label": "底板",
+              "detail": "60×40×8",
+              "icon": "▪",
+              "customName": null,
+              "suppressed": false,
+              "op": {
+                "type": "primitive",
+                "shape": "box",
+                "size": [
+                  60,
+                  40,
+                  8
+                ]
+              }
+            },
+            {
+              "label": "孔1",
+              "detail": "Ø6",
+              "icon": "○",
+              "customName": null,
+              "suppressed": false,
+              "op": {
+                "type": "primitive",
+                "shape": "cylinder",
+                "r": 3,
+                "h": 28,
+                "at": [
+                  0,
+                  0,
+                  -10
+                ],
+                "mode": "cut"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "instances": [
+    {
+      "id": "i1",
+      "partId": "p1",
+      "name": "下板",
+      "transform": {
+        "t": [
+          0,
+          0,
+          0
+        ],
+        "r": [
+          0,
+          0,
+          0,
+          1
+        ]
+      },
+      "fixed": true,
+      "color": null,
+      "visible": true
+    },
+    {
+      "id": "i2",
+      "partId": "p1",
+      "name": "上板",
+      "transform": {
+        "t": [
+          0,
+          0,
+          8
+        ],
+        "r": [
+          1.5397421249759294e-42,
+          5.286084702709209e-43,
+          0.000014875277633069186,
+          0.9999999998893632
+        ]
+      },
+      "fixed": false,
+      "color": null,
+      "visible": true
+    }
+  ],
+  "mates": [
+    {
+      "id": "m1",
+      "type": "coincident",
+      "a": {
+        "inst": "i1",
+        "ref": {
+          "kind": "plane",
+          "point": [
+            -1.1102230246251565e-16,
+            5.720557970724916e-16,
+            8
+          ],
+          "normal": [
+            0,
+            0,
+            1
+          ]
+        }
+      },
+      "b": {
+        "inst": "i2",
+        "ref": {
+          "kind": "plane",
+          "point": [
+            -1.1102230246251565e-16,
+            5.720557970724916e-16,
+            0
+          ],
+          "normal": [
+            0,
+            0,
+            -1
+          ]
+        }
+      },
+      "value": 0,
+      "flip": false,
+      "suppressed": false,
+      "label": "上板底面贴下板顶面"
+    },
+    {
+      "id": "m2",
+      "type": "concentric",
+      "a": {
+        "inst": "i1",
+        "ref": {
+          "kind": "axis",
+          "point": [
+            0,
+            0,
+            -10
+          ],
+          "direction": [
+            0,
+            0,
+            1
+          ],
+          "radius": 3
+        }
+      },
+      "b": {
+        "inst": "i2",
+        "ref": {
+          "kind": "axis",
+          "point": [
+            0,
+            0,
+            -10
+          ],
+          "direction": [
+            0,
+            0,
+            1
+          ],
+          "radius": 3
+        }
+      },
+      "value": 0,
+      "flip": false,
+      "suppressed": false,
+      "label": "Ø6 孔同轴"
+    },
+    {
+      "id": "m3",
+      "type": "angle",
+      "a": {
+        "inst": "i1",
+        "ref": {
+          "kind": "plane",
+          "point": [
+            -1.3322676295501878e-15,
+            20,
+            4
+          ],
+          "normal": [
+            0,
+            1,
+            0
+          ]
+        }
+      },
+      "b": {
+        "inst": "i2",
+        "ref": {
+          "kind": "plane",
+          "point": [
+            -1.3322676295501878e-15,
+            20,
+            4
+          ],
+          "normal": [
+            0,
+            1,
+            0
+          ]
+        }
+      },
+      "value": 0,
+      "flip": false,
+      "suppressed": false,
+      "label": "侧面同向"
+    }
+  ],
+  "explode": [
+    {
+      "id": "e1",
+      "instance": "i1",
+      "dir": [
+        0,
+        0,
+        -1
+      ],
+      "distance": 30,
+      "label": "下板下移"
+    },
+    {
+      "id": "e2",
+      "instance": "i2",
+      "dir": [
+        0,
+        0,
+        1
+      ],
+      "distance": 30,
+      "label": "上板上移"
+    }
+  ]
+}

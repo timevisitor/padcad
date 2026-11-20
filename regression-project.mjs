@@ -7,6 +7,8 @@ import opencascade from "replicad-opencascadejs";
 import { setOC, measureVolume } from "replicad";
 import { projectDefinition, restoreProject, withoutFeature, cacheRebuild, escapeHTML } from "./src/project.js";
 import { rebuild } from "./src/replay.js";
+import { replaceStep, appendStep, rebuildInto } from "./src/param-edit.js";
+import { sandboxCommands } from "./sandbox-command-stub.mjs";
 
 setOC(await opencascade({ wasmBinary: fs.readFileSync("./public/replicad_single.wasm") }));
 const base = () => ({ label: "Base", op: { type: "base" } });
@@ -87,7 +89,9 @@ function appFunction(name, nextMarker) {
 }
 
 test("application commit keeps the base after 60 operations and forks after undo", () => {
-  const context = vm.createContext({ history: [], hIndex: -1, shape: {}, FEATURE_ICON: {}, markSnapshot, renderTree() {} });
+  const context = vm.createContext({ history: [], hIndex: -1, shape: {}, FEATURE_ICON: {}, markSnapshot, renderTree() {},
+    appendStep, replaceStep, rebuildInto });
+  context.docCommands = sandboxCommands(context);
   vm.runInContext(appFunction("commit", "/** 跳到历史"), context);
   for (let i = 0; i < 65; i++) vm.runInContext(`commit('step${i}', '', 'base', {type:'base'})`, context);
   assert.equal(context.history.length, 65);
@@ -105,7 +109,9 @@ test("application failed delete rolls back model, cursor, and full history", () 
     withoutFeature, featureDisplayName: (x) => x.label,
     rebuild() { throw new Error("downstream reference lost"); },
     refresh() {}, renderFeatTree() {}, renderTree() {}, setStats() {},
+    replaceStep, rebuildInto,
   });
+  context.docCommands = sandboxCommands(context);
   vm.runInContext(appFunction("deleteStep", "function gotoStep("), context);
   vm.runInContext("deleteStep(1)", context);
   assert.equal(context.history, h);

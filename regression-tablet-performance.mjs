@@ -95,12 +95,15 @@ test("eleven-feature desktop benchmark records actual full vs incremental previe
   const h = historyFixture(), target = h.length - 1, override = { [target]: change(h[target]) };
   const fullMs = [], previewMs = [];
   for (let i = 0; i < 6; i++) {
-    let start = performance.now(); const full = rebuild(h, target, override); fullMs.push(performance.now() - start);
+    // { full: true } 显式要全量：这一条基准量的就是「全量 vs 只算改动那一步」，
+    // 而且它下面会 dispose 结果的实体，必须让 rebuild 自己拥有这些实体（复用段是借 history 的）。
+    let start = performance.now(); const full = rebuild(h, target, override, { full: true }); fullMs.push(performance.now() - start);
     start = performance.now(); const preview = rebuildPreview(h, target, override); previewMs.push(performance.now() - start);
     near(measureVolume(full.shape), measureVolume(preview.shape));
     preview.dispose(); disposeRebuild(full);
   }
   const median = values => values.slice(1).sort((a, b) => a - b)[2];
+  fs.mkdirSync("out", { recursive: true });
   fs.writeFileSync("out/pad7-performance-benchmark.json", JSON.stringify({ environment: "Windows Node.js / OCCT WASM; not a Xiaomi device measurement",
     features: h.length, fullRebuildSteps: h.length, previewSteps: 1, fullMedianMs: median(fullMs), previewMedianMs: median(previewMs), fullMs, previewMs }, null, 2));
 });

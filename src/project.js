@@ -16,10 +16,13 @@ export function projectDefinition(name, history, hIndex, refGeoms = [], rgSeq = 
 }
 
 export function cacheRebuild(history, result) {
+  // fromStep 之前的快照是「复用」来的：定义没变、标记照旧有效，不必重算 JSON 指纹。
+  const from = result.fromStep || 0;
   for (const snapshot of result.snapshots) {
-    history[snapshot.index].shape = snapshot.shape;
-    history[snapshot.index].toolShape = result.tools[snapshot.index] || null;
-    markSnapshot(history[snapshot.index]);
+    const row = history[snapshot.index];
+    row.shape = snapshot.shape;
+    row.toolShape = result.tools[snapshot.index] || null;
+    if (snapshot.index >= from) markSnapshot(row);
   }
 }
 

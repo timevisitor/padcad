@@ -1027,6 +1027,14 @@ body.workspace-ui #picker input#dist { width: 78px; min-height: 44px; text-align
 body.workspace-ui #picker button[data-act="apply"] { flex: 1 1 auto; min-height: 44px; }
 body.workspace-ui #picker .pk-quick { display: flex; gap: 6px; margin-top: 6px; }
 body.workspace-ui #picker .pk-quick button { flex: 1 1 0; min-height: 44px; }
+/*
+ * 语境工具栏（关联工具栏）的按钮网格：一屏放下 2 列、每格 ≥44px 命中区。
+ * 一行塞 5 个动作会把字压成两行（历史上 pill 就因为挤压把文字竖排过），所以走网格。
+ */
+body.workspace-ui #picker .pk-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+body.workspace-ui #picker .pk-grid.pk-cols-2 { grid-template-columns: repeat(2, 1fr); }
+body.workspace-ui #picker .pk-grid button { min-height: 44px; padding: 0 8px; white-space: nowrap; }
+body.workspace-ui #picker .pk-note { margin-top: 6px; font-size: 10px; line-height: 1.35; color: var(--text-dim, var(--muted)); }
 body.workspace-ui #picker .pk-debug { margin-top: 6px; font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /*
@@ -1287,3 +1295,60 @@ body.workspace-ui #menuDocActions .command-label { white-space: nowrap !importan
 body.workspace-ui.sketch-grid-on #view {
   background: radial-gradient(120% 90% at 50% 0%, var(--viewport-top, #f7f2e8), var(--viewport-bottom, #ebe4d4)) !important;
 }
+
+/* ---------------- 草图状态条 + 「自动关系」开关（v6 智能草图 UI 接线） ----------------
+   放在底栏上方居中：左缘是工具坞、右上角是语境卡片、右下是导航簇，中间这条带子是空的。
+   整条 pointer-events:none，只有按钮吃触摸 —— 否则它会挡住画布下半部分的落点。 */
+#sketchState {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(var(--workspace-bottom, 92px) + 10px);
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 6px 5px 12px;
+  max-width: min(88vw, 520px);
+  white-space: nowrap;
+  font: inherit; font-size: 13px; line-height: 1.3;
+  color: var(--fg, #2a251f);
+  background: var(--control-fill, #fdfaf3);
+  border: 1px solid var(--control-border, #d0c5b0);
+  border-radius: 999px;
+  box-shadow: var(--shadow-panel, 0 2px 10px rgba(20, 17, 13, .08));
+  z-index: 18;
+  pointer-events: none;
+}
+#sketchState.hidden { display: none !important; }
+#sketchState .ss-dot {
+  width: 9px; height: 9px; border-radius: 50%; flex: none;
+  background: var(--muted, #675e50);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .16);
+}
+#sketchState .ss-text { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+#sketchState .ss-btn {
+  pointer-events: auto;
+  flex: none;
+  min-height: 32px; min-width: 44px;          /* 触摸目标按平板要求放宽 */
+  padding: 4px 12px;
+  border: 1px solid var(--control-border, #d0c5b0);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted, #675e50);
+  font: inherit; font-size: 12.5px;
+  cursor: pointer;
+}
+/* 开关型按钮不套实心强调色（历史坑：chip 会整屏抢眼），只染文字与细边 */
+#sketchState .ss-btn.on {
+  background: rgba(0, 106, 112, .10);
+  border-color: #006a70;
+  color: #006a70;
+  font-weight: 600;
+}
+/* 冲突修复入口：「删除冲突关系 #N」—— 这是修复动作，可以实心一点（和开关型按钮分开） */
+#sketchState .ss-btn.ss-fix {
+  background: #e0362c;
+  border-color: #c02a22;
+  color: #fff;
+  font-weight: 600;
+}
+#sketchState .ss-btn.ss-fix.hidden { display: none !important; }
+#sketchState .ss-btn.ss-fix:active { background: #c02a22; }

@@ -50,6 +50,11 @@ const ICONS = {
   edges: "M12 2 3 7v10l9 5 9-5V7ZM3 7l9 5 9-5M12 12v10",
   array: "M4 4h6v6H4ZM14 4h6v6h-6ZM4 14h6v6H4ZM14 14h6v6h-6Z",
   parallel: "M4 6h16M4 12h16M4 18h16",
+  /*
+   * 平面模式（正对草图平面）：一个方框 + 中间一条水平基准线。
+   * 别用 parallel 的三条横线 —— 那在平板上读作"菜单/汉堡"，也容易被当成"平行"这个几何关系。
+   */
+  plane: "M6 6h12v12H6ZM3 12h18",
   feature: "M4 6h16M4 12h10M4 18h16M18 10v6M15 13h6",
   measure: "M3 15 15 3l6 6L9 21ZM7 11l2 2M11 7l2 2M15 3l2 2",
   hole: "M12 3a4 4 0 0 1 4 4v5a4 4 0 0 1-8 0V7a4 4 0 0 1 4-4ZM5 21h14",
@@ -270,7 +275,7 @@ export function installWorkspaceUI({ onLayout = () => {}, project = null, select
       <button type="button" class="sm-item" data-sm="display"><span>显示设置</span></button>
       <button type="button" class="sm-item" data-sm="back"><span>返回开始页</span></button>
     </div>
-    <div class="sm-foot"><span id="appVersion" class="chip">版本：V5.1.7 · 平板浮层 UI</span></div>`;
+    <div class="sm-foot"><span id="appVersion" class="chip">版本：V6.0.2 · 平板浮层 UI</span></div>`;
   body.append(mainMenu);
   const menuDocActions = mainMenu.querySelector("#menuDocActions");
   // 点了文档动作（打开/保存/导入/导出）后收起 ⋯菜单 —— 否则系统选择器回来后菜单还盖在画布上（真机 5.1.2/5.1.3 截图）
@@ -414,7 +419,13 @@ export function installWorkspaceUI({ onLayout = () => {}, project = null, select
   navigation.setAttribute("aria-label", "视图与导航");
   const modeToggle = byId("modeToggle");
   move(modeToggle, navigation);
-  decorate(modeToggle, "view");
+  /*
+   * 图标必须等于功能（skill「工具轨命名：名字必须等于功能」）：
+   * 「平面」按钮原本借用了 eye（视图）图标，于是右下角出现**两个一模一样的眼睛**
+   * —— 一个是平面模式、一个是视图面板，按钮写着「平面」却画着视图的眼睛，用户无法分辨。
+   * 这里换成平行的双线（平面），眼睛只留给真正的视图按钮。
+   */
+  decorate(modeToggle, "plane");
   const navigationButtons = new Map();
   for (const action of ["snap", "datum"]) {
     const button = buttonByAct.get(action);
@@ -745,18 +756,23 @@ export function installWorkspaceUI({ onLayout = () => {}, project = null, select
     syncGroupHighlight();
   }
 
-  /** 组按钮显示组内当前激活工具的图标（im-touch 的做法：组按钮=组内当前工具） */
+  /**
+   * 组按钮状态：只切 `.on`（组内有激活工具），**不改图标**。
+   *
+   * 曾经照 im-touch 的做法把组按钮图标换成"组内当前工具"的图标 —— 结果
+   * 草图的「视图」组因为「捕捉」是开着的，按钮上画出一个磁铁（磁铁＝捕捉），
+   * 名字与图标对不上（skill 硬规则：名字必须等于功能）。组是菜单，图标只该表示这个菜单是什么。
+   */
   function syncGroupHighlight() {
     for (const [key, btn] of groupButtons) {
       const group = GROUPS[key];
       if (!group) continue;
       const active = group.acts.find((act) => (buttonByAct.get(act) || buttonBySact.get(act))?.classList.contains("on"));
       btn.classList.toggle("on", !!active);
-      const wanted = active || group.icon;
       const iconSlot = btn.querySelector("svg");
-      if (iconSlot && iconSlot.dataset.icon !== wanted) {
-        const fresh = makeIcon(wanted, 20);
-        fresh.dataset.icon = wanted;
+      if (iconSlot && iconSlot.dataset.icon !== group.icon) {
+        const fresh = makeIcon(group.icon, 20);
+        fresh.dataset.icon = group.icon;
         iconSlot.replaceWith(fresh);
       }
     }
@@ -941,7 +957,12 @@ export function installWorkspaceUI({ onLayout = () => {}, project = null, select
   // ---------------------------------------------------------------- 选中面小卡定位
   function avoidRects() {
     const out = [];
-    for (const id of ["shellTopLeft", "shellTopRight", "dimHandle", "status"]) {
+    /*
+     * 导航簇（#navigationBar，右下角的 平面/捕捉/视图 三个按钮）必须进避让表：
+     * 面卡长高之后（关联工具栏一排动作）正好压在它上面 —— 实测重叠 10088px²，
+     * 意味着导航按钮点不到、卡片下半截也被判"在屏外"。
+     */
+    for (const id of ["shellTopLeft", "shellTopRight", "dimHandle", "status", "navigationBar"]) {
       const el = byId(id);
       if (!el) continue;
       if (el.classList.contains("hidden") || el.hidden) continue;
@@ -1026,7 +1047,7 @@ export function installWorkspaceUI({ onLayout = () => {}, project = null, select
   function refresh() {
     if (disposed) return;
     attachViewControls();
-    decorate(modeToggle, "view");
+    decorate(modeToggle, "plane");   // 与 install 时一致：平面模式不用眼睛图标（见上面的注释）
     const workspace = visible(byId("startScreen")) ? "start" : visible(viewbar) ? "view" : "model";
     const sketchVisible = workspace === "model" && visible(sketchbar);
     const sketchPending = workspace === "model" && visible(byId("extrude"));
