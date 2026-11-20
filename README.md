@@ -25,7 +25,7 @@ APK 打包走 Capacitor，在小米 Pad 7 Pro/Ultra 这类 12 寸平板上是真
 - 升级：与 5.1.7 同包名 `com.padcad.tablet`、同 debug 证书签名，可直接覆盖安装，本地设计不丢
 
 > 国内直连 GitHub release 的下载可能很慢或中断，可以用镜像前缀：
-> `https://ghfast.top/https://github.com/timevisitor/padcad/releases/latest/download/PadCAD-6.0.2.apk`）。
+> `https://ghfast.top/https://github.com/timevisitor/padcad/releases/latest/download/PadCAD-6.0.2.apk`。
 > 镜像只是加速，装之前仍建议核一下 sha256。
 
 完整版本记录（versionCode、sha256、变更要点）见 [docs/releases.md](docs/releases.md)。
